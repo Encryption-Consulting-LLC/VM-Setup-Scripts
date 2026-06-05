@@ -17,9 +17,11 @@
          SetupComplete.cmd can invoke the .ps1 without a bypass flag.
       5. Optionally accepts an -AdminPassword to embed in the unattend.xml
          used by Sysprep's OOBE pass (auto-logon for the console session that
-         shows the first-boot prompts).
-      6. Writes a minimal unattend.xml to C:\Windows\Panther\unattend.xml.
-      7. Runs Sysprep /generalize /oobe /shutdown /quiet /unattend.
+         shows the first-boot prompts). If omitted, prompts twice and
+         requires both entries to match.
+      6. Writes a minimal unattend.xml to C:\Windows\System32\Sysprep\unattend.xml.
+      7. Runs Sysprep /generalize /oobe /shutdown /unattend and verifies the
+         generalize actually succeeded before declaring victory.
 
     After the VM powers off:
       - Export / snapshot the VMDK as your golden image.
@@ -30,9 +32,10 @@
 
 .PARAMETER AdminPassword
     Plain-text password to set for the built-in Administrator account via the
-    Sysprep unattend.xml.  If omitted you are prompted securely at runtime.
-    The value is written into unattend.xml in plain text (Windows requirement
-    at this stage; the file is deleted by Sysprep after use).
+    Sysprep unattend.xml.  If omitted you are prompted securely at runtime
+    (twice -- entries must match).  The value is written into unattend.xml in
+    plain text (Windows requirement at this stage; the file is deleted by
+    Sysprep after use).
 
 .PARAMETER SkipSysprep
     Stage the scripts and write unattend.xml but do NOT execute Sysprep.
@@ -98,6 +101,13 @@ function Write-Fail {
     Write-Host "    [FAIL] $Message" -ForegroundColor Red
 }
 
+function ConvertFrom-SecureToPlain {
+    param([securestring]$Secure)
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure)
+    try     { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+}
+
 # ---------------------------------------------------------------------------
 # 1. Environment validation
 # ---------------------------------------------------------------------------
@@ -147,10 +157,25 @@ if (Test-Path $sysprepRegPath) {
 Write-Step "Administrator password for unattend.xml"
 
 if (-not $AdminPassword) {
-    $secPwd = Read-Host "Enter the Administrator password for first-boot auto-logon" -AsSecureString
-    $bstr   = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secPwd)
-    try     { $AdminPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
-    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+    $maxAttempts = 3
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $first  = ConvertFrom-SecureToPlain (Read-Host "Enter the Administrator password for first-boot auto-logon" -AsSecureString)
+        if ([string]::IsNullOrWhiteSpace($first)) {
+            Write-Warn "Password cannot be empty. (attempt $attempt of $maxAttempts)"
+            continue
+        }
+        $second = ConvertFrom-SecureToPlain (Read-Host "Re-enter the password to confirm" -AsSecureString)
+        if ($first -cne $second) {
+            Write-Warn "Passwords do not match. (attempt $attempt of $maxAttempts)"
+            continue
+        }
+        $AdminPassword = $first
+        break
+    }
+    if (-not $AdminPassword) {
+        Write-Fail "Could not confirm a password after $maxAttempts attempts."
+        exit 1
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($AdminPassword)) {
@@ -459,12 +484,7 @@ if ($currentPolicy -in @('RemoteSigned', 'Unrestricted', 'Bypass')) {
 
 Write-Step "Writing Sysprep unattend.xml"
 
-$panther   = "$env:SystemRoot\Panther"
-$unattendPath = Join-Path $panther "unattend.xml"
-
-if (-not (Test-Path $panther)) {
-    New-Item -ItemType Directory -Path $panther -Force | Out-Null
-}
+$unattendPath = "$env:SystemRoot\System32\Sysprep\unattend.xml"
 
 # Escape the password for XML
 $escapedPassword = $AdminPassword `
@@ -553,7 +573,7 @@ Write-Host ""
 if ($SkipSysprep) {
     Write-Warn "-SkipSysprep specified. Sysprep will NOT run."
     Write-Host "  Inspect the files above, then run Sysprep manually:" -ForegroundColor Yellow
-    Write-Host "  $sysprepExe /generalize /oobe /shutdown /quiet /unattend:`"$unattendPath`"" -ForegroundColor Yellow
+    Write-Host "  $sysprepExe /generalize /oobe /shutdown /unattend:`"$unattendPath`"" -ForegroundColor Yellow
     exit 0
 }
 
@@ -575,14 +595,16 @@ if ($confirm -ne 'YES') {
 }
 
 Write-Step "Running Sysprep"
-Write-Host "  Command: $sysprepExe /generalize /oobe /shutdown /quiet /unattend:`"$unattendPath`""
+Write-Host "  Command: $sysprepExe /generalize /oobe /shutdown /unattend:`"$unattendPath`""
 Write-Host ""
 
+# Note: /quiet is deliberately NOT used. It suppresses the Sysprep error
+# dialog, so a failed generalize just exits silently and the VM sits there
+# looking like it "didn't shut down".
 $sysprepArgs = @(
     '/generalize'
     '/oobe'
     '/shutdown'
-    '/quiet'
     "/unattend:$unattendPath"
 )
 
@@ -591,12 +613,27 @@ $proc = Start-Process -FilePath $sysprepExe `
     -PassThru `
     -Wait
 
-if ($proc.ExitCode -ne 0) {
-    Write-Fail "Sysprep exited with code $($proc.ExitCode)."
-    Write-Host "  Check C:\Windows\System32\Sysprep\Panther\setupact.log for details." -ForegroundColor Yellow
-    exit $proc.ExitCode
+# Sysprep's exit code is NOT a reliable success signal -- it frequently
+# returns 0 even when generalize failed. The authoritative indicator is
+# GeneralizationState = 7 in the SysprepStatus registry key.
+$genState = (Get-ItemProperty 'HKLM:\SYSTEM\Setup\Status\SysprepStatus' -ErrorAction SilentlyContinue).GeneralizationState
+
+if ($genState -ne 7) {
+    Write-Fail "Sysprep did not complete generalize (GeneralizationState=$genState, exit code $($proc.ExitCode))."
+    $errLog = "$env:SystemRoot\System32\Sysprep\Panther\setuperr.log"
+    if (Test-Path $errLog) {
+        Write-Host "`n  Last 20 lines of $errLog :" -ForegroundColor Yellow
+        Get-Content -Path $errLog -Tail 20 | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
+    } else {
+        Write-Host "  Check C:\Windows\System32\Sysprep\Panther\setupact.log for details." -ForegroundColor Yellow
+    }
+    exit 1
 }
 
-# If we reach here Sysprep ran cleanly -- but the machine should be
-# shutting down already (/shutdown flag). This line is a fallback.
-Write-OK "Sysprep completed. VM is shutting down."
+# Generalize succeeded -- /shutdown should be powering the VM off right now.
+# If we are still alive after a grace period, force the shutdown ourselves
+# so the golden image is never left running in a sealed state.
+Write-OK "Sysprep generalize completed. VM is shutting down."
+Start-Sleep -Seconds 90
+Write-Warn "Machine still running 90s after Sysprep finished -- forcing shutdown."
+Stop-Computer -Force
