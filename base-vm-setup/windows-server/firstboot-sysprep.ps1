@@ -30,10 +30,13 @@
       - Export / snapshot the VMDK as your golden image.
       - Deploy new VMs from that image with deploy_vm.py + a config ISO built
         by gen_ws_config_iso.py.
-      - On first boot the VM reads [cdrom]\vmconfig.json, configures hostname
-        and static IP, self-cleans, and reboots into a ready state. First-boot
-        progress is logged to C:\Windows\Temp\firstboot.log on the deployed VM
-        (nothing is shown on screen; it runs before any logon session).
+      - On first boot the VM reads [cdrom]\vmconfig.json and configures
+        hostname and static IP, then reboots twice automatically: the first
+        reboot applies the staged config, and a one-shot startup task cleans
+        up the first-boot artifacts and reboots once more so the new hostname
+        is fully active. First-boot progress is logged to
+        C:\Windows\Temp\firstboot.log on the deployed VM (nothing is shown on
+        screen; it runs before any logon session).
 
 .PARAMETER AdminPassword
     Plain-text password to set for the built-in Administrator account via the
@@ -409,8 +412,9 @@ $firstBootContent = @'
 
     Reads vmconfig.json from a mounted config ISO (any CD-ROM drive).
     Applies hostname, static IP, subnet prefix, gateway, and DNS.
-    Removes itself and SetupComplete.cmd after successful configuration.
-    Reboots the machine.
+    Reboots to apply the staged configuration; a one-shot FirstBootFinalize
+    startup task then removes the first-boot artifacts and performs one
+    final automatic reboot, after which the new hostname is fully active.
 
     vmconfig.json schema (produced by gen_ws_config_iso.py):
     {
@@ -582,32 +586,53 @@ try {
     }
 
     # -----------------------------------------------------------------------
-    # 5. Self-cleanup
+    # 5. Stage finalize pass: cleanup + automatic second reboot
     # -----------------------------------------------------------------------
 
-    $selfDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    # The reboot below applies the staged hostname, but the new name is not
+    # fully active until one more restart. Automate that with a one-shot
+    # SYSTEM task that fires at the next startup: it removes the first-boot
+    # artifacts, deregisters itself, and reboots a final time. (Startup
+    # trigger, not logon -- nobody logs on to a freshly deployed VM.)
 
-    # Register cleanup as a scheduled task that fires once at next logon,
-    # after this script has already exited -- we cannot delete ourselves
-    # while we are running.
-    $cleanupScript = @"
-Remove-Item -Path '$($selfDir)\FirstBoot.ps1'   -Force -ErrorAction SilentlyContinue
-Remove-Item -Path '$($selfDir)\SetupComplete.cmd' -Force -ErrorAction SilentlyContinue
-Unregister-ScheduledTask -TaskName 'FirstBootCleanup' -Confirm:`$false -ErrorAction SilentlyContinue
+    $selfDir     = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $finalizePs1 = "$env:SystemRoot\Temp\FirstBootFinalize.ps1"
+
+    $finalizeContent = @"
+# One-shot finalize pass, registered by FirstBoot.ps1. Runs as SYSTEM at the
+# first startup after first-boot configuration was applied.
+if (-not (Test-Path '$selfDir\FirstBoot.ps1')) {
+    # Artifacts already gone: finalize ran on an earlier boot. Never reboot
+    # from here again -- just make sure the task is gone, then bail.
+    Unregister-ScheduledTask -TaskName 'FirstBootFinalize' -Confirm:`$false -ErrorAction SilentlyContinue
+    exit 0
+}
+Add-Content -Path '$LogPath' -Value "`$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  Finalize: hostname now '`$env:COMPUTERNAME'; cleaning up and performing final reboot."
+Remove-Item -Path '$selfDir\FirstBoot.ps1'     -Force -ErrorAction SilentlyContinue
+Remove-Item -Path '$selfDir\SetupComplete.cmd' -Force -ErrorAction SilentlyContinue
+# Deregister BEFORE rebooting so this task cannot fire in a reboot loop.
+Unregister-ScheduledTask -TaskName 'FirstBootFinalize' -Confirm:`$false -ErrorAction SilentlyContinue
+Remove-Item -Path '$finalizePs1' -Force -ErrorAction SilentlyContinue
+# Give the boot a moment to settle before restarting.
+Start-Sleep -Seconds 15
+Restart-Computer -Force
 "@
 
-    $action  = New-ScheduledTaskAction -Execute 'powershell.exe' `
-                   -Argument "-WindowStyle Hidden -Command `"$cleanupScript`""
-    $trigger = New-ScheduledTaskTrigger -AtLogOn
-    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
-    Register-ScheduledTask -TaskName 'FirstBootCleanup' `
-        -Action $action -Trigger $trigger -Settings $settings `
-        -RunLevel Highest -Force | Out-Null
+    Set-Content -Path $finalizePs1 -Value $finalizeContent -Encoding UTF8
 
-    Write-Log "Cleanup task registered (runs at next logon, then removes itself)."
+    $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                     -Argument "-ExecutionPolicy RemoteSigned -WindowStyle Hidden -File `"$finalizePs1`""
+    $trigger   = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+    Register-ScheduledTask -TaskName 'FirstBootFinalize' `
+        -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
+        -Force | Out-Null
+
+    Write-Log "Finalize task registered (next startup: cleanup + final reboot to fully activate hostname)."
 
     # -----------------------------------------------------------------------
-    # 6. Reboot
+    # 6. Reboot (finalize task reboots once more at next startup)
     # -----------------------------------------------------------------------
 
     Write-Log "Configuration complete -- rebooting."
