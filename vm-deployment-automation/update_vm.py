@@ -5,6 +5,14 @@ update_vm.py — Update a registered VM's VMX and/or config ISO.
 Updates the VMX (CPU, RAM, network, etc.) and optionally uploads a new config ISO
 for an existing VM. Does not modify the disk. The VM must exist and be powered off.
 
+KNOWN LIMITATION — swapping the config ISO does NOT re-run first-boot config on an
+already-deployed VM. FirstBoot.ps1 is launched by SetupComplete.cmd, which Windows
+fires only ONCE, during the post-Sysprep specialize/OOBE pass. After a VM has booted
+past first boot, attaching a new ISO and powering on re-applies nothing — the runner
+never runs again. Re-apply would need a persistent boot-time trigger (a non-one-shot
+scheduled task or a small agent that detects a new config disc); that is intentionally
+out of scope here. Use a new ISO at clone time (clone_vm.py) for per-VM config.
+
 Examples:
   ./update_vm.py -n dc01 -s esxi7.example.com -u root -c 4 -r 8192
   ./update_vm.py -n dc01 -s esxi7.example.com -u root --iso isos/dc01-config.iso --power-on
