@@ -1,0 +1,9 @@
+[submodule "vmkit"]
+	path = vmkit
+	url = git@github-ec:Arnesh-EC/vmkit.git
+[submodule "configgen"]
+	path = configgen
+	url = git@github-ec:Arnesh-EC/configgen.git
+[submodule "isokit"]
+	path = isokit
+	url = git@github-ec:Arnesh-EC/isokit.git

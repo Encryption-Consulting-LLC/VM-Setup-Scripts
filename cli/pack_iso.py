@@ -15,8 +15,9 @@ exact order they are listed here. Line endings are normalized per type (CRLF for
 
 This tool is content-agnostic — it just packages whatever scripts it is given.
 The per-VM hostname and network scripts are produced by the generators under
-script-generators/windows-server/ (PowerShell .ps1) and
-script-generators/linux-server/ (shell .sh); pack them here in execution order.
+the config-script-generators/ project (../config-script-generators/windows-server/
+for PowerShell .ps1 and ../config-script-generators/linux-server/ for shell .sh);
+pack them here in execution order.
 
 Examples:
   ./pack_scripts_into_iso.py 10-hostname.ps1 20-network.ps1 -o isos/dc01-config.iso

@@ -26,23 +26,23 @@ import sys
 import tempfile
 import time
 
-from vmlib.validate import (
+from vmkit.validate import (
     validate_cpus,
     validate_hostname_rfc,
     validate_iso_path,
     validate_mac,
     validate_memory,
 )
-from vmlib.progress import setup_logging
-from vmlib.vmx import DEFAULT_GUEST_OS, parse_guest_os, render_vmx
-from vmlib.esxi import (
+from vmkit.progress import setup_logging
+from vmkit.vmx import DEFAULT_GUEST_OS, parse_guest_os, render_vmx
+from vmkit.esxi import (
     connect,
     get_datacenter,
     get_vm_by_name,
     power_off_vm,
     power_on_vm,
 )
-from vmlib.datastore import (
+from vmkit.datastore import (
     read_datastore_file,
     upload_file,
 )

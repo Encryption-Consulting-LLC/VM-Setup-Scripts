@@ -1,0 +1,27 @@
+[project]
+name = "vm-setup-scripts"
+version = "0.1.0"
+description = "VM deployment automation: thin CLIs over the vmkit / configgen / isokit libraries."
+requires-python = ">=3.14"
+dependencies = [
+    "vmkit",
+    "configgen",
+    "isokit",
+]
+
+[project.scripts]
+clone-vm = "cli.clone_vm:main"
+update-vm = "cli.update_vm:main"
+pack-iso = "cli.pack_iso:main"
+
+[tool.uv.sources]
+vmkit = { path = "vmkit", editable = true }
+configgen = { path = "configgen", editable = true }
+isokit = { path = "isokit", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cli"]
