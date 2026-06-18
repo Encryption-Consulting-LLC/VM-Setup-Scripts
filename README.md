@@ -70,6 +70,4 @@ uv sync          # installs the three libraries (editable) + their deps
 | `clone-vm`    | vmkit       | Clone the base VM and register it on ESXi    |
 | `update-vm`   | vmkit       | Update an existing VM's hardware / config    |
 
-> Status: `clone-vm`, `update-vm`, and `pack-iso` are wired. The unified `gen-hostname` /
-> `gen-network` commands land with the API-ready refactor; until then the generators run as
-> `python -m configgen.linux.hostname …` / `configgen.windows.network …`.
+All five `--platform`-aware / ESXi commands are wired as `[project.scripts]` entry points.
