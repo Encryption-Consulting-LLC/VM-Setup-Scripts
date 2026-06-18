@@ -28,7 +28,7 @@ from vmlib.validate import (
     validate_memory,
 )
 from vmlib.progress import human_bytes, setup_logging
-from vmlib.vmx import random_mac, render_vmx
+from vmlib.vmx import DEFAULT_GUEST_OS, parse_guest_os, random_mac, render_vmx
 from vmlib.esxi import (
     connect,
     get_datacenter,
@@ -42,6 +42,7 @@ from vmlib.datastore import (
     copy_virtual_disk,
     get_base_vmdk_size,
     make_directory,
+    read_datastore_file,
     upload_file,
 )
 
@@ -162,6 +163,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Base VM folder/file name to clone (default: ws-2025-base).",
     )
     parser.add_argument(
+        "--guest-os",
+        default=None,
+        metavar="ID",
+        help=(
+            "VMware guestOS identifier to bake into the VMX (e.g. "
+            "other6xLinux64Guest). If omitted, it is read from the base VM's "
+            f"VMX; if that cannot be read, defaults to {DEFAULT_GUEST_OS}."
+        ),
+    )
+    parser.add_argument(
         "--max-usage",
         type=float,
         default=80.0,
@@ -267,10 +278,37 @@ def main() -> None:
     mac_source = "specified" if args.mac_address else "randomly generated"
     log.info("MAC address: %s (%s)", mac, mac_source)
 
+    # Resolve guest OS: explicit override, else read it from the base VM's VMX
+    # so a Linux base yields a Linux VMX (instead of hardcoding Windows).
+    if args.guest_os:
+        guest_os = args.guest_os
+        log.info("Guest OS: %s (specified)", guest_os)
+    else:
+        guest_os = DEFAULT_GUEST_OS
+        try:
+            base_vmx = read_datastore_file(
+                args.server, args.user, password, args.port,
+                args.datastore, dc.name, f"{args.base}/{args.base}.vmx",
+            )
+            detected = parse_guest_os(base_vmx)
+            if detected:
+                guest_os = detected
+                log.info("Guest OS: %s (detected from base '%s')", guest_os, args.base)
+            else:
+                log.warning(
+                    "No guestOS line in base VMX; defaulting to %s.", guest_os
+                )
+        except Exception as exc:
+            log.warning(
+                "Could not read base VMX (%s); defaulting guest OS to %s.",
+                exc, guest_os,
+            )
+
     # Render VMX in memory
     iso_filename = f"{args.name}-config.iso" if args.iso else None
     vmx_content = render_vmx(
-        args.name, mac, args.cpus, args.ram, iso_filename=iso_filename
+        args.name, mac, args.cpus, args.ram,
+        iso_filename=iso_filename, guest_os=guest_os,
     )
     log.debug("VMX rendered (%d bytes)", len(vmx_content))
 

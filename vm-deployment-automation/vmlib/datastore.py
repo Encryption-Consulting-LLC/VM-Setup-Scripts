@@ -163,6 +163,39 @@ def upload_file(
     log.info("  %s: done", remote_filename)
 
 
+def read_datastore_file(
+    host: str,
+    user: str,
+    password: str,
+    port: int,
+    datastore: str,
+    dc_name: str,
+    remote_path: str,
+) -> str:
+    """Read a datastore file via HTTPS GET and return its text.
+
+    The HTTPS GET mirror of upload_file(). ``remote_path`` is the path within the
+    datastore (e.g. ``ws-2025-base/ws-2025-base.vmx``). Raises on non-200 so the
+    caller can fall back to a default.
+    """
+    url = (
+        f"https://{host}:{port}/folder/{remote_path}"
+        f"?dcPath={dc_name}&dsName={datastore}"
+    )
+    log.info("Reading [%s] %s", datastore, remote_path)
+    resp = requests.get(
+        url,
+        auth=(user, password),
+        verify=False,
+        timeout=60,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Read failed (HTTP {resp.status_code}): {resp.text[:200]}"
+        )
+    return resp.text
+
+
 def get_base_vmdk_size(datastore_obj: vim.Datastore, base: str) -> int:
     """Return the total on-disk size (bytes) of the base VM's .vmdk file(s)."""
     browser = datastore_obj.browser

@@ -34,7 +34,7 @@ from vmlib.validate import (
     validate_memory,
 )
 from vmlib.progress import setup_logging
-from vmlib.vmx import render_vmx
+from vmlib.vmx import DEFAULT_GUEST_OS, parse_guest_os, render_vmx
 from vmlib.esxi import (
     connect,
     get_datacenter,
@@ -43,6 +43,7 @@ from vmlib.esxi import (
     power_on_vm,
 )
 from vmlib.datastore import (
+    read_datastore_file,
     upload_file,
 )
 from pyVmomi import vim
@@ -255,8 +256,28 @@ def main() -> None:
         log.info("ISO: keeping existing attachment (if any)")
         iso_filename = f"{args.name}-config.iso"
 
+    # Preserve the VM's guest OS: read it from the existing VMX rather than
+    # letting the template default clobber it (e.g. back to Windows on a Linux VM).
+    guest_os = DEFAULT_GUEST_OS
+    try:
+        existing_vmx = read_datastore_file(
+            args.server, args.user, password, args.port,
+            args.datastore, dc.name, f"{args.name}/{args.name}.vmx",
+        )
+        detected = parse_guest_os(existing_vmx)
+        if detected:
+            guest_os = detected
+            log.info("Guest OS: %s (preserved from existing VMX)", guest_os)
+        else:
+            log.warning("No guestOS line in existing VMX; defaulting to %s.", guest_os)
+    except Exception as exc:
+        log.warning(
+            "Could not read existing VMX (%s); defaulting guest OS to %s.",
+            exc, guest_os,
+        )
+
     vmx_content = render_vmx(
-        args.name, mac, cpus, mem_mb, iso_filename=iso_filename
+        args.name, mac, cpus, mem_mb, iso_filename=iso_filename, guest_os=guest_os
     )
     log.debug("VMX rendered (%d bytes)", len(vmx_content))
 

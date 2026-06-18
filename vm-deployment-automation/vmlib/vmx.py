@@ -1,4 +1,12 @@
 import random
+import re
+
+# Guest OS baked into a freshly rendered VMX when none can be read from an
+# existing VMX (e.g. a base VM whose .vmx is missing or unreadable). This keeps
+# the historical Windows Server default for backward compatibility.
+DEFAULT_GUEST_OS = "windows2022srvNext-64"
+
+_GUEST_OS_RE = re.compile(r'^\s*guestOS\s*=\s*"(.+?)"', re.IGNORECASE | re.MULTILINE)
 
 VMX_TEMPLATE = """\
 .encoding = "UTF-8"
@@ -39,7 +47,7 @@ ethernet0.wakeOnPcktRcv = "FALSE"
 ethernet0.uptCompatibility = "TRUE"
 ethernet0.present = "TRUE"
 displayName = "{hostname}"
-guestOS = "windows2022srvNext-64"
+guestOS = "{guest_os}"
 chipset.motherboardLayout = "acpi"
 uefi.secureBoot.enabled = "TRUE"
 disk.EnableUUID = "TRUE"
@@ -106,12 +114,24 @@ def random_mac() -> str:
     return f"00:50:56:{b1:02x}:{b2:02x}:{b3:02x}"
 
 
+def parse_guest_os(vmx_text: str) -> str | None:
+    """Return the guestOS identifier from VMX text, or None if absent.
+
+    Reads the literal value of the `guestOS = "..."` line so it can be re-emitted
+    verbatim into a freshly rendered VMX (preserving a base/existing VM's OS type
+    instead of hardcoding one).
+    """
+    match = _GUEST_OS_RE.search(vmx_text)
+    return match.group(1) if match else None
+
+
 def render_vmx(
     hostname: str,
     mac_address: str,
     num_cpus: int,
     mem_mb: int,
     iso_filename: str | None = None,
+    guest_os: str = DEFAULT_GUEST_OS,
 ) -> str:
     cdrom_block = (
         _CDROM_BLOCK.format(iso_filename=iso_filename)
@@ -124,4 +144,5 @@ def render_vmx(
         num_cpus=num_cpus,
         mem_mb=mem_mb,
         cdrom_block=cdrom_block,
+        guest_os=guest_os,
     )
