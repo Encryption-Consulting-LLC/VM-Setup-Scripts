@@ -8,3 +8,7 @@ dist/
 isos/
 logs/
 .ruff_cache/
+# generated per-VM first-boot scripts (regenerate with gen-hostname/gen-network/gen-password)
+# anchored to the repo root so the base-vm-setup/ source scripts are untouched
+/[0-9][0-9]-*.sh
+/[0-9][0-9]-*.ps1

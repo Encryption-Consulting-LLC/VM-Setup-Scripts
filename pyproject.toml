@@ -15,6 +15,7 @@ update-vm = "cli.update_vm:main"
 pack-iso = "cli.pack_iso:main"
 gen-hostname = "cli.gen_hostname:main"
 gen-network = "cli.gen_network:main"
+gen-password = "cli.gen_password:main"
 
 [tool.uv.sources]
 vmkit = { git = "https://github.com/Arnesh-EC/vmkit.git", tag = "v0.1.0" }
