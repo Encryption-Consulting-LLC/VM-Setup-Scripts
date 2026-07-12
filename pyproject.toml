@@ -14,6 +14,7 @@ dependencies = [
 clone-vm = "cli.clone_vm:main"
 update-vm = "cli.update_vm:main"
 pack-iso = "cli.pack_iso:main"
+upload-file = "cli.upload_file:main"
 gen-hostname = "cli.gen_hostname:main"
 gen-network = "cli.gen_network:main"
 gen-password = "cli.gen_password:main"
