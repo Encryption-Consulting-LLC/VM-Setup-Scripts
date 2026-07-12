@@ -43,8 +43,10 @@ uv pip install -e ../vmkit       # overrides the git-pinned vmkit until the next
 
 ## End-to-end workflow
 
-1. **Prepare the golden image (once).** On a fully configured VM, run the matching base-setup
-   script, which installs the first-boot runner and generalizes the image:
+1. **Prepare the golden image (once).** Copy the matching `base-vm-setup/<platform>/` folder
+   to a fully configured VM (the setup script stages the runner from its sibling file —
+   `FirstBoot.ps1` / `firstboot-runner.sh` — so both files must travel together), then run
+   the setup script, which installs the first-boot runner and generalizes the image:
    - Linux:   `sudo base-vm-setup/linux-server/firstboot-setup.sh`
    - Windows: `base-vm-setup/windows-server/firstboot-sysprep.ps1`
 
@@ -66,8 +68,13 @@ uv pip install -e ../vmkit       # overrides the git-pinned vmkit until the next
    clone-vm -n web01 -s esxi.example.com -u root --iso isos/web01-config.iso --power-on
    ```
 
-5. **First boot:** the runner finds the config ISO by its `firstboot.manifest`, runs the scripts
-   in order (hostname, network), then reboots once.
+5. **First boot:** the runner finds the config ISO by its `firstboot.manifest`, stages any
+   payload files a v2 manifest lists (`pack-iso --file`; scripts reach them via
+   `$FIRSTBOOT_FILES_DIR`), runs the scripts in order (hostname, network, ...), then reboots
+   once.
+
+Runner tests (no VM needed): `pwsh -NoProfile -Command "Invoke-Pester -Path tests/FirstBoot.Tests.ps1"`
+and `tests/test-linux-runner.sh`.
 
 ## CLIs
 
@@ -75,7 +82,7 @@ uv pip install -e ../vmkit       # overrides the git-pinned vmkit until the next
 |---------------|-------------|----------------------------------------------|
 | `gen-hostname`| configgen   | Generate a per-VM hostname first-boot script |
 | `gen-network` | configgen   | Generate a per-VM network first-boot script  |
-| `pack-iso`    | isokit      | Pack scripts into a config ISO               |
+| `pack-iso`    | isokit      | Pack scripts (+ `--file` payloads) into a config ISO |
 | `clone-vm`    | vmkit       | Clone the base VM and register it on ESXi    |
 | `update-vm`   | vmkit       | Update an existing VM's hardware / config    |
 

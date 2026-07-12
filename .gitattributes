@@ -1,0 +1,6 @@
+# Line-ending pins: the first-boot runners are staged byte-for-byte onto VMs,
+# so their EOLs must not depend on who checked the repo out.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.sh  text eol=lf

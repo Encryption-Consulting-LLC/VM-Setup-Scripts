@@ -20,7 +20,7 @@ gen-password = "cli.gen_password:main"
 [tool.uv.sources]
 vmkit = { git = "https://github.com/Arnesh-EC/vmkit.git", tag = "v0.1.0" }
 configgen = { git = "https://github.com/Arnesh-EC/configgen.git", tag = "v0.1.0" }
-isokit = { git = "https://github.com/Arnesh-EC/isokit.git", tag = "v0.1.0" }
+isokit = { git = "https://github.com/Arnesh-EC/isokit.git", tag = "v0.2.0" }
 
 [build-system]
 requires = ["hatchling"]
