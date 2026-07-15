@@ -11,7 +11,8 @@
 
     What it does:
       1. Validates the environment (OS, elevation, Sysprep availability).
-      2. Creates C:\Windows\Setup\Scripts\ and drops SetupComplete.cmd there.
+      2. Creates C:\Windows\Setup\Scripts\ and stages SetupComplete.cmd there
+         (from the runner file shipped in this folder).
       3. Stages FirstBoot.ps1 (the runner file shipped in this folder --
          copy the whole windows-server\ folder to the VM) alongside
          SetupComplete.cmd, after verifying its marker.
@@ -376,13 +377,14 @@ $setupCompleteCmd = Join-Path $scriptsDir "SetupComplete.cmd"
 if ((Test-Path $setupCompleteCmd) -and -not $Force) {
     Write-Warn "SetupComplete.cmd already exists. Use -Force to overwrite."
 } else {
-    $cmdContent = @'
-@echo off
-:: Launched automatically by Windows after OOBE completes, as SYSTEM, before
-:: any logon session exists -- there is no console anyone could see.
-:: FirstBoot.ps1 logs to C:\Windows\Temp\firstboot.log instead.
-powershell.exe -ExecutionPolicy RemoteSigned -WindowStyle Hidden -File "%~dp0FirstBoot.ps1"
-'@
+    $setupCompleteSource = Join-Path $PSScriptRoot 'SetupComplete.cmd'
+    if (-not (Test-Path $setupCompleteSource)) {
+        throw "SetupComplete.cmd not found next to this script ($setupCompleteSource). Copy the whole windows-server folder to the VM."
+    }
+    $cmdContent = Get-Content -Path $setupCompleteSource -Raw
+    if ($cmdContent -notmatch 'FIRSTBOOT-SETUPCOMPLETE-MARKER') {
+        throw "SetupComplete.cmd at $setupCompleteSource does not look like the first-boot wrapper (marker missing)."
+    }
     Set-Content -Path $setupCompleteCmd -Value $cmdContent -Encoding ASCII -Force:$Force
     Add-StagedFile -Path $setupCompleteCmd
     Write-OK "Written: $setupCompleteCmd"
@@ -485,8 +487,7 @@ $unattendXml = @"
         </AdministratorPassword>
       </UserAccounts>
 
-      <!-- One-time auto-logon convenience for the operator; first-boot cleanup
-           is handled by the FirstBootFinalize task, which fires at startup -->
+      <!-- One-time auto-logon convenience for the operator -->
       <AutoLogon>
         <Password>
           <Value>$escapedPassword</Value>

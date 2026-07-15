@@ -44,8 +44,9 @@ uv pip install -e ../vmkit       # overrides the git-pinned vmkit until the next
 ## End-to-end workflow
 
 1. **Prepare the golden image (once).** Copy the matching `base-vm-setup/<platform>/` folder
-   to a fully configured VM (the setup script stages the runner from its sibling file —
-   `FirstBoot.ps1` / `firstboot-runner.sh` — so both files must travel together), then run
+   to a fully configured VM (the setup script stages its sibling runner files —
+   `FirstBoot.ps1` and `SetupComplete.cmd` on Windows, or `firstboot-runner.sh` on
+   Linux — so the whole platform folder must travel together), then run
    the setup script, which installs the first-boot runner and generalizes the image:
    - Linux:   `sudo base-vm-setup/linux-server/firstboot-setup.sh`
    - Windows: `base-vm-setup/windows-server/firstboot-sysprep.ps1`
@@ -68,10 +69,12 @@ uv pip install -e ../vmkit       # overrides the git-pinned vmkit until the next
    clone-vm -n web01 -s esxi.example.com -u root --iso isos/web01-config.iso --power-on
    ```
 
-5. **First boot:** the runner finds the config ISO by its `firstboot.manifest`, stages any
+5. **First boot:** the configuration flow finds the config ISO by its `firstboot.manifest`, stages any
    payload files a v2 manifest lists (`pack-iso --file`; scripts reach them via
    `$FIRSTBOOT_FILES_DIR`), runs the scripts in order (hostname, network, ...), then reboots
-   once.
+   once. On Windows, `SetupComplete.cmd` schedules that reboot only after the runner
+   succeeds, then removes the transient runner, payload, and script files. A failed run
+   retains those artifacts and does not reboot.
 
 Runner tests (no VM needed): `pwsh -NoProfile -Command "Invoke-Pester -Path tests/FirstBoot.Tests.ps1"`
 and `tests/test-linux-runner.sh`.

@@ -19,6 +19,51 @@ BeforeAll {
     }
 }
 
+Describe 'Single-reboot orchestration sources' {
+    BeforeAll {
+        $windowsSetupDir = Join-Path $PSScriptRoot '..' 'base-vm-setup' 'windows-server'
+        $runnerSource = Get-Content (Join-Path $windowsSetupDir 'FirstBoot.ps1') -Raw
+        $wrapperSource = Get-Content (Join-Path $windowsSetupDir 'SetupComplete.cmd') -Raw
+    }
+
+    It 'leaves reboot and cleanup to SetupComplete' {
+        $runnerSource | Should -Not -Match 'FirstBootFinalize'
+        $runnerSource | Should -Not -Match 'ScheduledTask'
+        $runnerSource | Should -Not -Match 'Restart-Computer'
+        $runnerSource | Should -Match 'Returning to SetupComplete\.cmd'
+    }
+
+    It 'contains exactly one reboot command and no finalize task or script' {
+        @([regex]::Matches($wrapperSource, '(?im)^\s*shutdown\.exe\s')).Count | Should -Be 1
+        $wrapperSource | Should -Not -Match 'FirstBootFinalize'
+        $wrapperSource | Should -Not -Match 'schtasks|ScheduledTask'
+    }
+
+    It 'gates reboot and cleanup on a successful runner exit' {
+        $exitGate = $wrapperSource.IndexOf('if not "%FIRSTBOOT_EXIT%"=="0"')
+        $shutdown = $wrapperSource.IndexOf('shutdown.exe /r')
+        $cleanup = $wrapperSource.IndexOf('del /f /q "%~dp0FirstBoot.ps1"')
+
+        $exitGate | Should -BeGreaterThan -1
+        $shutdown | Should -BeGreaterThan $exitGate
+        $cleanup | Should -BeGreaterThan $shutdown
+    }
+
+    It 'retains artifacts when reboot scheduling fails' {
+        $shutdownGate = $wrapperSource.IndexOf('if not "%SHUTDOWN_EXIT%"=="0"')
+        $cleanup = $wrapperSource.IndexOf('del /f /q "%~dp0FirstBoot.ps1"')
+
+        $shutdownGate | Should -BeGreaterThan -1
+        $cleanup | Should -BeGreaterThan $shutdownGate
+        $wrapperSource | Should -Match 'Failed to schedule the first-boot reboot.*Artifacts retained'
+    }
+
+    It 'logs cleanup failures and removes the wrapper last' {
+        @([regex]::Matches($wrapperSource, 'Cleanup could not remove')).Count | Should -Be 3
+        @($wrapperSource.TrimEnd() -split "`r?`n")[-1] | Should -Match '^del /f /q "%~f0".*FIRSTBOOT_LOG.*ERROR: Cleanup could not remove'
+    }
+}
+
 Describe 'Read-FirstBootManifest' {
 
     It 'parses a v1 manifest (no files key) without throwing under StrictMode' {
@@ -158,5 +203,82 @@ Describe 'Execution loop (Windows-only)' -Skip:(-not $IsWindows) {
 
         $proc.ExitCode | Should -Be 0
         Get-Content $out | Should -Contain 'hello-from-child'
+    }
+}
+
+Describe 'SetupComplete execution (Windows-only)' -Skip:(-not $IsWindows) {
+    BeforeEach {
+        $caseDir = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $scriptsDir = Join-Path $caseDir 'Windows' 'Setup' 'Scripts'
+        $tempDir = Join-Path $caseDir 'Windows' 'Temp'
+        $workDir = Join-Path $tempDir 'firstboot-scripts'
+        New-Item -ItemType Directory -Path $scriptsDir, $workDir -Force | Out-Null
+        Set-Content -Path (Join-Path $workDir 'payload.bin') -Value 'diagnostic payload'
+
+        $setupComplete = Join-Path $scriptsDir 'SetupComplete.cmd'
+        Copy-Item (Join-Path $PSScriptRoot '..' 'base-vm-setup' 'windows-server' 'SetupComplete.cmd') $setupComplete
+        $shutdownCalls = Join-Path $caseDir 'shutdown-calls.txt'
+        $shutdownStub = Join-Path $caseDir 'shutdown-stub.cmd'
+        Set-Content -Path $shutdownStub -Encoding ASCII -Value @"
+@echo off
+echo reboot>>"$shutdownCalls"
+exit /b %FIRSTBOOT_TEST_SHUTDOWN_EXIT%
+"@
+
+        $savedSystemRoot = $env:SystemRoot
+        $savedShutdownCommand = $env:FIRSTBOOT_TEST_SHUTDOWN_COMMAND
+        $savedShutdownExit = $env:FIRSTBOOT_TEST_SHUTDOWN_EXIT
+        $env:SystemRoot = Join-Path $caseDir 'Windows'
+        $env:FIRSTBOOT_TEST_SHUTDOWN_COMMAND = $shutdownStub
+        $env:FIRSTBOOT_TEST_SHUTDOWN_EXIT = '0'
+    }
+
+    AfterEach {
+        $env:SystemRoot = $savedSystemRoot
+        $env:FIRSTBOOT_TEST_SHUTDOWN_COMMAND = $savedShutdownCommand
+        $env:FIRSTBOOT_TEST_SHUTDOWN_EXIT = $savedShutdownExit
+    }
+
+    It 'schedules one reboot and cleans up only after success' {
+        Set-Content -Path (Join-Path $scriptsDir 'FirstBoot.ps1') -Encoding ASCII -Value 'exit 0'
+
+        $proc = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/c', "`"$setupComplete`"") -Wait -PassThru
+
+        $proc.ExitCode | Should -Be 0
+        @(Get-Content $shutdownCalls).Count | Should -Be 1
+        Test-Path (Join-Path $scriptsDir 'FirstBoot.ps1') | Should -BeFalse
+        Test-Path $workDir | Should -BeFalse
+        Test-Path $setupComplete | Should -BeFalse
+        Test-Path (Join-Path $tempDir 'FirstBootFinalize.ps1') | Should -BeFalse
+    }
+
+    It 'preserves the runner exit code, diagnostics, and artifacts on failure' {
+        Set-Content -Path (Join-Path $scriptsDir 'FirstBoot.ps1') -Encoding ASCII -Value @"
+Set-Content -Path '$tempDir\firstboot-error.log' -Value 'runner failed'
+exit 23
+"@
+
+        $proc = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/c', "`"$setupComplete`"") -Wait -PassThru
+
+        $proc.ExitCode | Should -Be 23
+        Test-Path $shutdownCalls | Should -BeFalse
+        Test-Path (Join-Path $tempDir 'firstboot-error.log') | Should -BeTrue
+        Test-Path (Join-Path $scriptsDir 'FirstBoot.ps1') | Should -BeTrue
+        Test-Path $workDir | Should -BeTrue
+        Test-Path $setupComplete | Should -BeTrue
+    }
+
+    It 'logs reboot scheduling failure and performs no cleanup' {
+        Set-Content -Path (Join-Path $scriptsDir 'FirstBoot.ps1') -Encoding ASCII -Value 'exit 0'
+        $env:FIRSTBOOT_TEST_SHUTDOWN_EXIT = '9'
+
+        $proc = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/c', "`"$setupComplete`"") -Wait -PassThru
+
+        $proc.ExitCode | Should -Be 9
+        @(Get-Content $shutdownCalls).Count | Should -Be 1
+        Get-Content (Join-Path $tempDir 'firstboot.log') -Raw | Should -Match 'Failed to schedule the first-boot reboot.*Artifacts retained'
+        Test-Path (Join-Path $scriptsDir 'FirstBoot.ps1') | Should -BeTrue
+        Test-Path $workDir | Should -BeTrue
+        Test-Path $setupComplete | Should -BeTrue
     }
 }
