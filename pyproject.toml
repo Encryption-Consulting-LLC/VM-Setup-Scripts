@@ -20,9 +20,9 @@ gen-network = "cli.gen_network:main"
 gen-password = "cli.gen_password:main"
 
 [tool.uv.sources]
-vmkit = { git = "https://github.com/Arnesh-EC/vmkit.git", tag = "v0.1.0" }
-configgen = { git = "https://github.com/Arnesh-EC/configgen.git", tag = "v0.1.0" }
-isokit = { git = "https://github.com/Arnesh-EC/isokit.git", tag = "v0.2.0" }
+vmkit = { git = "https://github.com/Arnesh-EC/vmkit.git", tag = "v0.5.0" }
+configgen = { git = "https://github.com/Arnesh-EC/configgen.git", tag = "v0.5.0" }
+isokit = { git = "https://github.com/Arnesh-EC/isokit.git", tag = "v0.4.0" }
 
 [build-system]
 requires = ["hatchling"]

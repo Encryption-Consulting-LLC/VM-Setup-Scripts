@@ -53,18 +53,12 @@ wheels = [
 ]
 
 [[package]]
-name = "colorama"
-version = "0.4.6"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
-]
-
-[[package]]
 name = "configgen"
-version = "0.1.0"
-source = { git = "https://github.com/Arnesh-EC/configgen.git?tag=v0.1.0#38ddda04f5538ece5d1122e9735d3449b710d8a6" }
+version = "0.4.0"
+source = { git = "https://github.com/Arnesh-EC/configgen.git?tag=v0.5.0#0f815ad5d763ff42e6fa3221b9e7d1c32b140559" }
+dependencies = [
+    { name = "tomli-w" },
+]
 
 [[package]]
 name = "idna"
@@ -77,8 +71,8 @@ wheels = [
 
 [[package]]
 name = "isokit"
-version = "0.2.0"
-source = { git = "https://github.com/Arnesh-EC/isokit.git?tag=v0.2.0#40fdc99755cc12ca5197b743ff5746f9af2941e1" }
+version = "0.3.0"
+source = { git = "https://github.com/Arnesh-EC/isokit.git?tag=v0.4.0#a22ca080947305824d3df05adb34458f9c90921b" }
 dependencies = [
     { name = "pycdlib" },
 ]
@@ -125,18 +119,6 @@ wheels = [
 ]
 
 [[package]]
-name = "tqdm"
-version = "4.68.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/87/d7/0535a28b1f5f24f6612fb3ff1e89fb1a8d160fee0f976e0aa6803862134b/tqdm-4.68.3.tar.gz", hash = "sha256:00dfa48452b6b6cfae3dd9885636c23d3422d1ec97c66d96818cbd5e0821d482", size = 170596, upload-time = "2026-06-17T07:36:52.105Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d8/8e/bb97bb0c71802080bfc8952937d174e49cfc50de5c951dd47b2496f0dcdb/tqdm-4.68.3-py3-none-any.whl", hash = "sha256:39832cc2def2789a6f29df83f172db7416cea70052c0907a57801c5f2fdccb03", size = 78337, upload-time = "2026-06-17T07:36:50.132Z" },
-]
-
-[[package]]
 name = "urllib3"
 version = "2.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -158,18 +140,18 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "configgen", git = "https://github.com/Arnesh-EC/configgen.git?tag=v0.1.0" },
-    { name = "isokit", git = "https://github.com/Arnesh-EC/isokit.git?tag=v0.2.0" },
+    { name = "configgen", git = "https://github.com/Arnesh-EC/configgen.git?tag=v0.5.0" },
+    { name = "isokit", git = "https://github.com/Arnesh-EC/isokit.git?tag=v0.4.0" },
     { name = "tomli-w", specifier = ">=1.2.0" },
-    { name = "vmkit", git = "https://github.com/Arnesh-EC/vmkit.git?tag=v0.1.0" },
+    { name = "vmkit", git = "https://github.com/Arnesh-EC/vmkit.git?tag=v0.5.0" },
 ]
 
 [[package]]
 name = "vmkit"
-version = "0.1.0"
-source = { git = "https://github.com/Arnesh-EC/vmkit.git?tag=v0.1.0#1cc610e28d40972f710d88855b98d87eaf988528" }
+version = "0.4.0"
+source = { git = "https://github.com/Arnesh-EC/vmkit.git?tag=v0.5.0#7e77d390f53bb5558904d34ab1f08ec9596355c7" }
 dependencies = [
     { name = "pyvmomi" },
     { name = "requests" },
-    { name = "tqdm" },
+    { name = "urllib3" },
 ]
