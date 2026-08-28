@@ -61,6 +61,14 @@ echo "===== firstboot-setup ($DISTRO) ====="
 RUNNER=/usr/local/sbin/firstboot-runner.sh
 UNIT=/etc/systemd/system/firstboot.service
 
+# The interface name a clone of this image will come up with. vmkit's VMX
+# template pins ethernet0.pciSlotNumber = "33", and on VMware the predictable
+# name derives from that slot, so every VM clone-vm produces is ens33. An image
+# built at a different slot is named differently from its own clones -- harmless
+# for generated configs (the per-VM script detects the NIC at runtime) but a trap
+# for anything baked into the image that names an interface.
+CLONE_IFACE=ens33
+
 # ---------------------------------------------------------------------------
 # 1. Install the first-boot runner
 # ---------------------------------------------------------------------------
@@ -174,6 +182,26 @@ if [ -n "$remaining" ]; then
     printf '           %s\n' $remaining
     echo "           Check it does not pin an interface name -- clones get the NIC at the"
     echo "           PCI slot vmkit's VMX pins, which may not match this VM's."
+fi
+
+# Same detection the generated per-VM network script uses: first physical,
+# non-loopback link.
+image_iface=""
+for cand in /sys/class/net/*; do
+    name=$(basename "$cand")
+    [ "$name" = lo ] && continue
+    [ -e "$cand/device" ] || continue
+    image_iface=$name
+    break
+done
+if [ -z "$image_iface" ]; then
+    echo "WARN   : no physical network interface found; cannot check this image's NIC name."
+elif [ "$image_iface" != "$CLONE_IFACE" ]; then
+    echo "WARN   : this image's NIC is '$image_iface', but clones of it will be '$CLONE_IFACE'"
+    echo "           (clone-vm pins ethernet0.pciSlotNumber=33). Generated configs are"
+    echo "           unaffected -- they detect the NIC at runtime -- but anything baked"
+    echo "           into this image naming '$image_iface' will not match on a clone."
+    echo "           To align them, move this VM's NIC to PCI slot 33 and rebake."
 fi
 
 echo "Next   : snapshot/export this image as your golden image."
