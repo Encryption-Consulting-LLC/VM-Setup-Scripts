@@ -4,6 +4,11 @@
 Thin CLI over ``configgen.render_network``: parse args, build a validated
 NetworkConfig, render, write the file. The static/DHCP contract is enforced by
 NetworkConfig; this CLI surfaces any ValidationError as an argparse error.
+
+On Linux the network stack is chosen with --backend. It defaults to netplan,
+which is what the Ubuntu base VM runs -- the netplan backend also moves the
+image's shipped /etc/netplan/*.yaml aside, which is what clears the stale
+interface name baked into 50-cloud-init.yaml.
 """
 
 import argparse
@@ -14,6 +19,9 @@ from configgen import NetworkConfig, ValidationError
 from cli._common import arg_validator
 
 _DEFAULT_OUTPUT = {"linux": "20-network.sh", "windows": "20-network.ps1"}
+
+# The base VM is Ubuntu Server, whose network is managed by netplan.
+_DEFAULT_LINUX_BACKEND = "netplan"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,12 +36,18 @@ def build_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  %(prog)s --platform linux --ip 192.168.1.50 --prefix 24 "
             "--gateway 192.168.1.1 --dns1 192.168.1.10 -o 20-network.sh\n"
+            "  %(prog)s --platform linux --backend systemd-networkd --dhcp -o 20-network.sh\n"
             "  %(prog)s --platform windows --dhcp -o 20-network.ps1"
         ),
     )
     parser.add_argument(
         "--platform", required=True, choices=configgen.PLATFORMS,
         help="Target OS family for the generated script.",
+    )
+    parser.add_argument(
+        "--backend", default=None, choices=configgen.LINUX_BACKENDS,
+        help=f"Linux network stack the script configures (default: {_DEFAULT_LINUX_BACKEND}). "
+             "Must match the base image; invalid for --platform windows.",
     )
     parser.add_argument(
         "--dhcp", action="store_true",
@@ -75,6 +89,13 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.platform == "windows":
+        if args.backend is not None:
+            parser.error("--backend is a Linux-only option; Windows has a single network stack.")
+        backend = None
+    else:
+        backend = args.backend or _DEFAULT_LINUX_BACKEND
+
     try:
         cfg = NetworkConfig(
             mode="dhcp" if args.dhcp else "static",
@@ -88,7 +109,10 @@ def main() -> None:
     except ValidationError as exc:
         parser.error(str(exc))
 
-    script = configgen.render_network(args.platform, cfg)
+    try:
+        script = configgen.render_network(args.platform, cfg, backend)
+    except ValidationError as exc:
+        parser.error(str(exc))
 
     output_path = Path(args.output or _DEFAULT_OUTPUT[args.platform])
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,6 +120,8 @@ def main() -> None:
 
     print(f"Script written to: {output_path}")
     print(f"  platform    = {args.platform}")
+    if backend is not None:
+        print(f"  backend     = {backend}")
     print(f"  mode        = {cfg.mode}")
     if cfg.mode == "static":
         print(f"  ip/prefix   = {cfg.ip}/{cfg.prefix}")

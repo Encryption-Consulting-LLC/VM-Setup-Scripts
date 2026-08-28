@@ -59,6 +59,13 @@ uv pip install -e ../vmkit       # overrides the git-pinned vmkit until the next
    gen-network --platform linux --ip 192.168.1.50 --prefix 24 --gateway 192.168.1.1 --dns1 192.168.1.10 -o 20-network.sh
    ```
 
+   On Linux, `gen-network --backend` picks the network stack the generated script
+   configures: `netplan` (the default, and what the Ubuntu Server base image runs),
+   `systemd-networkd`, or `networkmanager`. It must match the base image — a mismatch
+   leaves the clone on its original address. The netplan backend also moves the image's
+   shipped `/etc/netplan/*.yaml` aside before writing its own, so a stale interface name
+   baked into `50-cloud-init.yaml` cannot fight the new config.
+
 3. **Pack them into a config ISO:**
    ```sh
    pack-iso 10-hostname.sh 20-network.sh -o isos/web01-config.iso
