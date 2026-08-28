@@ -9,8 +9,10 @@
 #   1. Installs a generic first-boot RUNNER (/usr/local/sbin/firstboot-runner.sh)
 #      and a systemd one-shot unit (firstboot.service) that invokes it on the
 #      next boot of a deployed VM.
-#   2. Ensures systemd-networkd is enabled (the per-VM network script assumes a
-#      pure systemd-networkd image; it does not fight NetworkManager/netplan).
+#   2. Ensures systemd-networkd is enabled. The per-VM network script targets one
+#      stack, chosen with `gen-network --backend`; both of the ones this image can
+#      run (netplan's default `renderer: networkd`, and systemd-networkd directly)
+#      need systemd-networkd up.
 #   3. "Generalizes" the image (the sysprep-generalize analogue): resets the
 #      machine-id, removes SSH host keys, clears logs and shell history, so each
 #      deployed clone gets a fresh identity.
@@ -107,6 +109,8 @@ echo "Enabled firstboot.service (runs on next boot)."
 # ---------------------------------------------------------------------------
 # 3. Ensure systemd-networkd (+ resolved for DNS=) are enabled
 # ---------------------------------------------------------------------------
+# netplan renders to systemd-networkd by default, so this is required whether the
+# per-VM script is generated with --backend netplan or systemd-networkd.
 echo "Enabling systemd-networkd ..."
 systemctl enable systemd-networkd >/dev/null 2>&1 || \
     echo "WARN: could not enable systemd-networkd -- ensure the base image provides it."
@@ -128,8 +132,25 @@ ln -s /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null || true
 rm -f /etc/ssh/ssh_host_* 2>/dev/null || true
 
 # cloud-init (if present) -- reset so it re-runs cleanly on the clone.
+#
+# --configs network additionally drops the network config cloud-init rendered at
+# install time (/etc/netplan/50-cloud-init.yaml). That file names THIS VM's
+# interface, which is derived from its ethernet0.pciSlotNumber -- clones get the
+# slot vmkit's VMX template pins, so the name usually differs (ens34 here, ens33
+# on the clone). Left behind, the file rides into every clone describing a link
+# that does not exist there: inert until a slot change makes it live, at which
+# point it claims the golden image's address on a deployed VM. A plain
+# `cloud-init clean` does not remove it.
 if command -v cloud-init >/dev/null 2>&1; then
-    cloud-init clean --logs >/dev/null 2>&1 || true
+    # --configs landed in cloud-init 23.1; fall back for older images.
+    cloud-init clean --logs --configs network >/dev/null 2>&1 || \
+        cloud-init clean --logs >/dev/null 2>&1 || true
+fi
+# Belt and braces: remove it directly, covering both the pre-23.1 fallback above
+# and an image where cloud-init is absent but its rendered config is not.
+if [ -e /etc/netplan/50-cloud-init.yaml ]; then
+    rm -f /etc/netplan/50-cloud-init.yaml
+    echo "Removed stale /etc/netplan/50-cloud-init.yaml (named this image's NIC)."
 fi
 
 # Clear logs and shell history.
@@ -142,7 +163,22 @@ done
 echo "===== firstboot-setup complete ($DISTRO) ====="
 echo "Runner : $RUNNER"
 echo "Unit   : $UNIT (enabled)"
+
+# Any netplan config left here is one the operator wrote, so it is not ours to
+# delete -- but if it names an interface it will carry that name into clones the
+# same way 50-cloud-init.yaml did. The netplan backend moves these aside on the
+# clone; the systemd-networkd backend does not.
+remaining=$(ls /etc/netplan/*.yaml /etc/netplan/*.yml 2>/dev/null || true)
+if [ -n "$remaining" ]; then
+    echo "WARN   : netplan config remains in this image:"
+    printf '           %s\n' $remaining
+    echo "           Check it does not pin an interface name -- clones get the NIC at the"
+    echo "           PCI slot vmkit's VMX pins, which may not match this VM's."
+fi
+
 echo "Next   : snapshot/export this image as your golden image."
+echo "         This image now has NO network config of its own. If you boot it again"
+echo "         to update it, configure the NIC by hand first."
 
 if [ "$SHUTDOWN" -eq 1 ]; then
     echo "Shutting down ..."
