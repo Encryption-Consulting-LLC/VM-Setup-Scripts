@@ -13,7 +13,7 @@ import sys
 import configgen
 import vmkit
 from vmkit.progress import setup_logging
-from vmkit.vmx import DEFAULT_GUEST_OS
+from vmkit.vmx import DEFAULT_GUEST_OS, DEFAULT_NETWORK
 from vmkit.validate import validate_cpus, validate_iso_path, validate_mac, validate_memory
 
 from cli._common import add_connection_args, arg_validator, resolve_password
@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  %(prog)s -n dc01 -s esxi7.example.com -u root\n"
             "  %(prog)s -n dc01 -s esxi7.example.com -u root "
-            "--base ws-2025-base --iso isos/dc01-config.iso --power-on"
+            "--base ws-2025-base --network 'VLAN 20' --iso isos/dc01-config.iso --power-on"
         ),
     )
     parser.add_argument(
@@ -73,6 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Base VM folder/file name to clone (default: ws-2025-base).",
     )
     parser.add_argument(
+        "--network", default=DEFAULT_NETWORK, metavar="NAME",
+        help=("Port group for ethernet0. Must already exist on the host, or the VM "
+              f"registers with a dead NIC (default: {DEFAULT_NETWORK!r})."),
+    )
+    parser.add_argument(
         "--guest-os", default=None, metavar="ID",
         help=("VMware guestOS id to bake into the VMX. If omitted, read from the "
               f"base VM's VMX; if unreadable, defaults to {DEFAULT_GUEST_OS}."),
@@ -100,7 +105,8 @@ def main() -> None:
     setup_logging(args.name, args.verbose)
 
     log.info("=" * 60)
-    log.info("Clone VM: %s  (base: %s, datastore: %s)", args.name, args.base, args.datastore)
+    log.info("Clone VM: %s  (base: %s, datastore: %s, network: %s)",
+             args.name, args.base, args.datastore, args.network)
     log.info("=" * 60)
 
     password = resolve_password(args)
@@ -117,6 +123,7 @@ def main() -> None:
             mac=args.mac_address,
             iso_path=args.iso,
             guest_os=args.guest_os,
+            network=args.network,
             max_usage_pct=args.max_usage,
             skip_disk_check=args.skip_disk_check,
             power_on=args.power_on,
