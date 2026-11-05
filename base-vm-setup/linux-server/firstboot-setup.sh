@@ -14,7 +14,8 @@
 #      run (netplan's default `renderer: networkd`, and systemd-networkd directly)
 #      need systemd-networkd up.
 #   3. "Generalizes" the image (the sysprep-generalize analogue): resets the
-#      machine-id, removes SSH host keys, clears logs and shell history, so each
+#      machine-id, removes SSH host keys (regenerated on each clone by
+#      ssh-hostkeys.service), clears logs and shell history, so each
 #      deployed clone gets a fresh identity.
 #
 # On a deployed VM the runner locates the config disc by a firstboot.manifest at
@@ -136,8 +137,31 @@ echo "Generalizing image ..."
 rm -f /var/lib/dbus/machine-id
 ln -s /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null || true
 
-# SSH host keys regenerate on next boot (avoids cloned hosts sharing keys).
+# Remove SSH host keys so cloned hosts don't share them, and install a unit
+# that regenerates them before sshd starts on each clone. Do NOT rely on
+# cloud-init for this: a clone-vm clone has no datasource (no seed disc, no
+# guestinfo), so ds-identify disables cloud-init on it ("No ds found") and
+# nothing would recreate the keys -- sshd then fails on every boot.
 rm -f /etc/ssh/ssh_host_* 2>/dev/null || true
+cat > /etc/systemd/system/ssh-hostkeys.service <<'HOSTKEYS'
+[Unit]
+Description=Generate SSH host keys missing after image generalization
+# Ordered before the daemon only -- not ssh.socket, which starts in
+# sockets.target ahead of this unit's default basic.target ordering (a cycle).
+# Debian/Ubuntu name the daemon ssh.service; RHEL-family name it sshd.service.
+Before=ssh.service sshd.service
+
+[Service]
+Type=oneshot
+# Creates only the key types that are missing: a no-op once they exist.
+ExecStart=/usr/bin/ssh-keygen -A
+
+[Install]
+WantedBy=ssh.service sshd.service
+HOSTKEYS
+systemctl daemon-reload
+systemctl enable ssh-hostkeys.service >/dev/null 2>&1 || \
+    echo "WARN: could not enable ssh-hostkeys.service -- clones may boot without SSH host keys."
 
 # cloud-init (if present) -- reset so it re-runs cleanly on the clone.
 #
