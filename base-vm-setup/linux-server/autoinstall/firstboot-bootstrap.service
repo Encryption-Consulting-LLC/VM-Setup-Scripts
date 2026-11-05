@@ -1,0 +1,23 @@
+[Unit]
+Description=One-time -base-pre bootstrap (customize, install first-boot runner, power off)
+# Only network ordering here. Do NOT order this unit after cloud-init.target or
+# cloud-final.service: on Ubuntu 24.04 both are ordered After=multi-user.target,
+# and this unit is wanted by multi-user.target -- that is an ordering cycle, and
+# systemd breaks it by dropping this job, leaving the VM idling at a login
+# prompt. The script waits for cloud-init itself (`cloud-init status --wait`).
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/var/lib/firstboot-bootstrap/firstboot-bootstrap.sh
+
+[Service]
+# simple, not oneshot: multi-user.target is ordered after units it wants, so a
+# oneshot would hold boot-up open while the script waits on cloud-final, which
+# itself waits for multi-user.target -- a deadlock. A simple service counts as
+# started immediately.
+Type=simple
+ExecStart=/bin/bash /var/lib/firstboot-bootstrap/firstboot-bootstrap.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
