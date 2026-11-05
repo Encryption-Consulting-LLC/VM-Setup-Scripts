@@ -8,15 +8,20 @@ open a connection, run the workflow, and map vmkit errors to exit codes. The
 
 import argparse
 import logging
-import sys
 
 import configgen
 import vmkit
-from vmkit.progress import setup_logging
 from vmkit.vmx import DEFAULT_GUEST_OS, DEFAULT_NETWORK
 from vmkit.validate import validate_cpus, validate_iso_path, validate_mac, validate_memory
 
-from cli._common import add_connection_args, arg_validator, resolve_password
+from cli._common import (
+    add_connection_args,
+    arg_validator,
+    exit_on_error,
+    resolve_password,
+    setup_cli_logging,
+)
+from cli._config import CLONE_KEYS, add_config_args, apply_config
 
 log = logging.getLogger("deploy-vm")
 
@@ -97,12 +102,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose (DEBUG) console output.",
     )
+    add_config_args(parser)
     return parser
 
 
 def main() -> None:
-    args = build_parser().parse_args()
-    setup_logging(args.name, args.verbose)
+    parser = build_parser()
+    apply_config(parser, CLONE_KEYS)
+    args = parser.parse_args()
+    setup_cli_logging(args.name, args.verbose)
 
     log.info("=" * 60)
     log.info("Clone VM: %s  (base: %s, datastore: %s, network: %s)",
@@ -111,7 +119,7 @@ def main() -> None:
 
     password = resolve_password(args)
 
-    try:
+    with exit_on_error(log, "Clone"):
         conn = vmkit.open_connection(args.server, args.user, password, args.port)
         result = vmkit.clone_workflow(
             conn,
@@ -128,22 +136,6 @@ def main() -> None:
             skip_disk_check=args.skip_disk_check,
             power_on=args.power_on,
         )
-    except (vmkit.AuthenticationError, vmkit.ConnectionFailedError) as exc:
-        log.error("%s", exc)
-        sys.exit(2)
-    except vmkit.VmExistsError as exc:
-        log.error("%s Aborting.", exc)
-        sys.exit(3)
-    except vmkit.InsufficientSpaceError as exc:
-        log.error("Limited disk resource: %s Aborting.", exc)
-        sys.exit(6)
-    except vmkit.VmkitError as exc:
-        log.error("Clone failed: %s", exc)
-        sys.exit(4)
-    except Exception as exc:
-        log.error("Clone failed: %s", exc)
-        log.debug("Traceback:", exc_info=True)
-        sys.exit(4)
 
     log.info("Done. VM '%s' registered (total VMs in inventory: %d).",
              result.name, result.total_vms)

@@ -13,6 +13,7 @@ runs on its own.
 ```
 VM-Setup-Scripts/
 ├── cli/           thin command-line front-ends over the three libraries
+├── recipes/       multi-step workflows that chain the libraries (deploy, bake)
 └── base-vm-setup/ one-time golden-image prep (Linux firstboot runner, Windows sysprep)
 ```
 
@@ -22,7 +23,9 @@ The libraries are independent public repos, pinned in `pyproject.toml` (`[tool.u
 - `isokit` — pack first-boot scripts into a config ISO
 
 Library code takes parameters and raises exceptions; it never prompts, prints, or calls
-`sys.exit` — those belong to the CLI (and future API) layer.
+`sys.exit` — those belong to the CLI (and future API) layer. `recipes/` follows the same
+rule: it holds the workflows that need more than one library (vmkit must not depend on
+configgen), so `deploy-vm`, `bake-base` and a future API share one implementation.
 
 ## Setup
 
@@ -40,6 +43,30 @@ To hack on a library and see changes here, clone it and install it editable into
 git clone git@github-ec:Arnesh-EC/vmkit.git ../vmkit
 uv pip install -e ../vmkit       # overrides the git-pinned vmkit until the next `uv sync`
 ```
+
+## Quick start
+
+Put the settings that don't change between VMs in a config file once
+(see [Config file](#config-file)):
+
+```sh
+mkdir -p ~/.config/vm-setup
+cp vm-setup.example.toml ~/.config/vm-setup/config.toml   # then edit it
+```
+
+Then each operation is one command:
+
+```sh
+bake-base ub-24.04-base                                  # -base-pre -> generalized base
+deploy-vm web01 --profile ubuntu --ip 192.168.1.50       # scripts -> ISO -> clone -> power on
+deploy-vm web02 --profile ubuntu --ip 192.168.1.51/24 --reset-password root
+deploy-vm web03 --profile ubuntu --ip 192.168.1.52 --dry-run   # show the long-form commands
+```
+
+`deploy-vm` does steps 2–4 below in one go; `bake-base` does step 2 of
+[Building the Linux base unattended](#building-the-linux-base-unattended). With
+`--dry-run`, both print the single-step commands they stand for and change nothing.
+The single-step commands remain for anything the shortcuts don't cover.
 
 ## End-to-end workflow
 
@@ -86,8 +113,15 @@ uv pip install -e ../vmkit       # overrides the git-pinned vmkit until the next
    succeeds, then removes the transient runner, payload, and script files. A failed run
    retains those artifacts and does not reboot.
 
-Runner tests (no VM needed): `pwsh -NoProfile -Command "Invoke-Pester -Path tests/FirstBoot.Tests.ps1"`
-and `tests/test-linux-runner.sh`.
+Steps 2–4 in one command: `deploy-vm web01 --platform linux --ip 192.168.1.50/24
+--gateway 192.168.1.1 --dns1 192.168.1.10 -s esxi.example.com -u root -b ub-24.04-base`
+(shorter with a profile). It also takes `--reset-password USER[:PASS],...` (as
+`gen-password`), `--script FILE` for extra first-boot scripts run after the generated
+ones, `--file FILE` for payloads, `--keep-iso FILE` to save the ISO, and `--no-power-on`.
+
+Tests (no VM needed): `uv run pytest` (config and recipes),
+`pwsh -NoProfile -Command "Invoke-Pester -Path tests/FirstBoot.Tests.ps1"`
+and `tests/test-linux-runner.sh` (runners).
 
 ## Building the Linux base unattended
 
@@ -125,8 +159,19 @@ The VM installs, reboots, runs the bootstrap once, and **powers off**. It is the
 `-base-pre`. Detach both ISOs. If it stays running, read
 `/var/log/firstboot-bootstrap.log`.
 
-**2. Bake `-base`.** The bake disc carries the setup script, with the runner as
-a payload:
+**2. Bake `-base`.**
+```sh
+bake-base ub-24.04-base          # clones ub-24.04-base-pre; --from PRE to override
+```
+It packs the bake disc, clones `-base-pre` with it, powers it on, waits for the
+clone to generalize and power itself off (`--timeout`, default 30 min), then
+detaches the disc. The VM must not exist yet. `--no-wait` returns once the clone
+is powered on. If the bake times out, the VM is still running and the disc is
+still attached; read `/var/log/firstboot.log` and `/var/log/firstboot-error.log`
+on its console.
+
+By hand, the same thing: the bake disc carries the setup script, with the runner
+as a payload:
 ```sh
 pack-iso base-vm-setup/linux-server/firstboot-setup.sh \
     --file base-vm-setup/linux-server/firstboot-runner.sh -o isos/ub-24.04-base-pre.iso
@@ -136,7 +181,7 @@ clone-vm -n ub-24.04-base -b ub-24.04-base-pre -s esxi.example.com -u root \
 The runner on the clone runs `firstboot-setup.sh` from the disc. That script
 re-installs the runner from the disc (so a re-bake picks up runner fixes),
 generalizes, and **powers off**. That powered-off clone is the base. Detach its
-ISO.
+ISO (`update-vm -n ub-24.04-base -s ... -u root --remove-iso`).
 
 Pack the runner with `--file`, never as a script. Listed as a script, the runner
 would execute itself and recurse.
@@ -145,10 +190,55 @@ would execute itself and recurse.
 
 | Command       | Backed by   | Purpose                                      |
 |---------------|-------------|----------------------------------------------|
+| `deploy-vm`   | recipes     | Generate config, pack the ISO, clone and power on — in one step |
+| `bake-base`   | recipes     | Generalize a Linux `-base-pre` clone into the base VM |
 | `gen-hostname`| configgen   | Generate a per-VM hostname first-boot script |
 | `gen-network` | configgen   | Generate a per-VM network first-boot script  |
 | `pack-iso`    | isokit      | Pack scripts (+ `--file` payloads) into a config ISO |
 | `clone-vm`    | vmkit       | Clone the base VM and register it on ESXi    |
 | `update-vm`   | vmkit       | Update an existing VM's hardware / config    |
+| `gen-password`| configgen   | Generate per-VM password-reset first-boot scripts |
+| `upload-file` | vmkit       | Copy a local file to a datastore folder      |
 
-All five `--platform`-aware / ESXi commands are wired as `[project.scripts]` entry points.
+All are wired as `[project.scripts]` entry points.
+
+The ESXi password comes from `-p`, else `$VMSETUP_PASSWORD`, else a prompt.
+
+Exit codes for the ESXi commands: `2` connection or login failed, `3` VM already
+exists / not found, `4` other failure, `5` config ISO could not be built, `6` not
+enough datastore space, `7` a bake did not finish within `--timeout`.
+
+## Config file
+
+Every command reads defaults from TOML, so per-site values (ESXi host, datastore,
+base, gateway, DNS) aren't retyped. [`vm-setup.example.toml`](vm-setup.example.toml)
+is a starting point.
+
+```toml
+[defaults]                 # every command
+server = "esxi.example.com"
+user = "root"
+
+[profile.ubuntu]           # with --profile ubuntu (or $VMSETUP_PROFILE=ubuntu)
+platform = "linux"
+base = "ub-24.04-base"
+prefix = 24
+gateway = "192.168.1.1"
+dns1 = "192.168.1.10"
+```
+
+- **Files**, lowest precedence first: `~/.config/vm-setup/config.toml` (honours
+  `$XDG_CONFIG_HOME`), then `./vm-setup.toml`. `--config FILE` or `$VMSETUP_CONFIG`
+  uses that one file instead.
+- **Precedence:** flag > profile > `[defaults]` > built-in default.
+- **Keys** are the long option names: `server user port datastore base network
+  guest-os cpus ram max-usage platform backend dhcp prefix gateway dns1 dns2
+  dns-suffix`. Each command uses the ones it has an option for; `update-vm` and
+  `upload-file` take only the connection keys (`server user port datastore`), so a
+  profile's `cpus`/`ram` can never resize an existing VM.
+- **Not configurable:** anything naming one VM (name, IP, MAC), passwords, and
+  on/off switches like `--power-on`. An unknown key or invalid value is an error
+  that names the file.
+- `--no-dhcp` overrides `dhcp = true`, and so does passing `--ip` to `deploy-vm`.
+  With `deploy-vm --dhcp`, a profile's `prefix` and `gateway` are dropped. On
+  Windows, a `backend` from the config is ignored.

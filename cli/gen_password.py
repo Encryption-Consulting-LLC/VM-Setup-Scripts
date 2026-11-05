@@ -10,61 +10,14 @@ the ISO is config, not a secret store. Treat the disc accordingly.
 """
 
 import argparse
-import getpass
-import sys
 from pathlib import Path
 
 import configgen
-from cli._common import arg_validator
+from cli._common import arg_validator, parse_accounts, resolve_accounts
+from cli._config import add_config_args, apply_config
 
 _DEFAULT_OUTPUT = {"linux": "30-password.sh", "windows": "30-password.ps1"}
 _DEFAULT_USERNAME = {"linux": "root", "windows": "Administrator"}
-
-
-def _parse_users(value: str) -> list[tuple[str, str | None]]:
-    """Parse ``user:pass,user2,...`` into ordered ``(username, password | None)`` pairs.
-
-    Each comma-separated entry is either ``username:password`` or a bare
-    ``username`` (password prompted for later). Only the first colon splits, so
-    passwords may contain colons; they may not contain a comma — use the bare
-    form and be prompted instead. Raises ``ValidationError`` on a bad entry.
-    """
-    pairs: list[tuple[str, str | None]] = []
-    seen: set[str] = set()
-    for entry in value.split(","):
-        entry = entry.strip()
-        if not entry:
-            raise configgen.ValidationError(
-                f"Empty account entry in '{value}': expected user:pass or user, "
-                "comma-separated.",
-                field="users",
-                code="users_empty_entry",
-            )
-        username, sep, password = entry.partition(":")
-        try:
-            username = configgen.validate_username(username)
-            password = configgen.validate_password(password) if sep else None
-        except configgen.ValidationError as exc:
-            # A bare entry that is not a valid username is most often the tail of a
-            # password containing a comma, which the split above tore off.
-            hint = "" if sep else (
-                " A password containing a comma cannot be given inline — pass the"
-                " username alone to be prompted for it."
-            )
-            raise configgen.ValidationError(
-                f"{exc} (in account entry '{entry}').{hint}",
-                field=exc.field,
-                code=exc.code,
-            )
-        if username in seen:
-            raise configgen.ValidationError(
-                f"Duplicate account '{username}': each account may appear once.",
-                field="users",
-                code="users_duplicate",
-            )
-        seen.add(username)
-        pairs.append((username, password))
-    return pairs
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -97,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "-u", "--users", default=None,
-        type=arg_validator(_parse_users),
+        type=arg_validator(parse_accounts),
         metavar="USER[:PASS][,...]",
         help=(
             "Comma-separated accounts to reset, each user:pass or a bare user "
@@ -112,23 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
             "suffix (30-password-root.sh)."
         ),
     )
+    add_config_args(parser)
     return parser
-
-
-def _prompt_password(username: str, parser: argparse.ArgumentParser) -> str:
-    """Prompt twice for ``username``'s password and confirm. Exits 130 on cancel."""
-    try:
-        first = getpass.getpass(f"New password for '{username}': ", echo_char="*")
-        again = getpass.getpass(f"Confirm password for '{username}': ", echo_char="*")
-    except (KeyboardInterrupt, EOFError):
-        print()
-        sys.exit(130)
-    if first != again:
-        parser.error(f"passwords for '{username}' do not match.")
-    try:
-        return configgen.validate_password(first)
-    except configgen.ValidationError as exc:
-        parser.error(str(exc))
 
 
 def _output_path(base: Path, username: str, multiple: bool) -> Path:
@@ -141,16 +79,14 @@ def _output_path(base: Path, username: str, multiple: bool) -> Path:
 
 def main() -> None:
     parser = build_parser()
+    apply_config(parser, {"platform"})
     args = parser.parse_args()
 
     accounts = args.users or [(_DEFAULT_USERNAME[args.platform], None)]
     base = Path(args.output or _DEFAULT_OUTPUT[args.platform])
     multiple = len(accounts) > 1
 
-    resolved = [
-        (username, password if password is not None else _prompt_password(username, parser))
-        for username, password in accounts
-    ]
+    resolved = resolve_accounts(accounts, parser)
 
     written: list[Path] = []
     for username, password in resolved:

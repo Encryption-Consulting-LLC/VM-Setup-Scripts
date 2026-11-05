@@ -1,0 +1,44 @@
+# Example vm-setup config. Copy to ~/.config/vm-setup/config.toml (personal) or
+# ./vm-setup.toml (per project; overrides the personal file), then edit.
+#
+# Keys are the commands' long option names. Each command reads only the keys it
+# has an option for. Passwords are never read from here: they are prompted for,
+# or taken from $VMSETUP_PASSWORD.
+#
+# Precedence: command-line flag > [profile.<name>] > [defaults] > built-in default.
+
+[defaults]
+server = "esxi.example.com"
+user = "root"
+datastore = "datastore1"
+
+# deploy-vm web01 --profile ubuntu --ip 192.168.1.50
+[profile.ubuntu]
+platform = "linux"
+backend = "netplan"          # must match the base image's network stack
+base = "ub-24.04-base"
+network = "VM Network"       # ESXi port group
+cpus = 2
+ram = 4096
+prefix = 24
+gateway = "192.168.1.1"
+dns1 = "192.168.1.10"
+# dns2 = "192.168.1.11"
+# dns-suffix = "corp.example.com"
+
+# deploy-vm dc01 --profile windows --ip 192.168.1.20
+[profile.windows]
+platform = "windows"
+base = "ws-2025-base"
+cpus = 4
+ram = 8192
+prefix = 24
+gateway = "192.168.1.1"
+dns1 = "192.168.1.10"
+
+# deploy-vm lab07 --profile lab        (DHCP; --ip ... switches it to static)
+[profile.lab]
+platform = "linux"
+base = "ub-24.04-base"
+network = "Lab"
+dhcp = true
