@@ -4,3 +4,6 @@
 *.cmd text eol=crlf
 *.bat text eol=crlf
 *.sh  text eol=lf
+# Autoinstall seed files are read on Linux guests; CRLF would break YAML/units.
+base-vm-setup/linux-server/autoinstall/user-data text eol=lf
+*.service text eol=lf

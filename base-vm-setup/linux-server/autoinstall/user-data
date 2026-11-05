@@ -1,0 +1,76 @@
+#cloud-config
+# Ubuntu Server 24.04 autoinstall config for the -base-pre VM. A TEMPLATE:
+# build-seed.sh fills the @@...@@ placeholders and packs it, with the bootstrap
+# files, onto a NoCloud seed disc (volume label CIDATA) that the installer finds
+# on its own.
+#
+# What it produces: a minimal server install that, on its first boot, lets
+# cloud-init finish (user, SSH keys), runs firstboot-bootstrap.service once --
+# your optional customize.sh, then `firstboot-setup.sh --install-only` -- and
+# powers off. That is the -base-pre VM: installed, customized, runner armed, NOT
+# generalized. Bake the base from a clone of it (see ../../README / main README).
+#
+# Edit freely below; the late-commands block is what the bootstrap depends on.
+# Reference: https://canonical-subiquity.readthedocs-hosted.com/en/latest/reference/autoinstall-reference.html
+autoinstall:
+  version: 1
+
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  timezone: Etc/UTC
+
+  source:
+    id: ubuntu-server            # ubuntu-server-minimal for the minimized image
+
+  # DHCP on every wired NIC (the installer default). Clones get their real
+  # address from the per-VM gen-network script; firstboot-setup.sh drops this
+  # rendered config when it generalizes the base. Without DHCP on the install
+  # network, the install still completes but skips package updates/installs
+  # that need the archive.
+  network:
+    version: 2
+    ethernets:
+      any-wired:
+        match:
+          name: "e*"
+        dhcp4: true
+
+  # Installer default: LVM, root LV sized to part of the VG. Use
+  # `sizing-policy: all` to give root the whole disk, or `name: direct` for
+  # plain partitions (simplest to grow after update-vm enlarges a clone's disk).
+  storage:
+    layout:
+      name: lvm
+
+  identity:
+    hostname: @@HOSTNAME@@
+    username: @@USERNAME@@
+    realname: @@USERNAME@@
+    password: "@@PASSWORD_HASH@@"
+
+  ssh:
+    install-server: true
+    allow-pw: true
+
+  # python3: the first-boot runner parses firstboot.manifest with it.
+  packages:
+    - open-vm-tools
+    - python3
+
+  updates: security
+
+  # Reboot into the installed system so cloud-init finishes the first boot and
+  # firstboot-bootstrap.service runs; the bootstrap powers the VM off when done.
+  shutdown: reboot
+
+  # Stage the bootstrap from the seed disc into the target and enable it. Each
+  # entry runs in the installer environment via `sh -c`; the target is at /target.
+  late-commands:
+    - mkdir -p /run/fb-seed && mount -o ro LABEL=CIDATA /run/fb-seed
+    - mkdir -p /target/var/lib/firstboot-bootstrap
+    - cp /run/fb-seed/firstboot-runner.sh /run/fb-seed/firstboot-setup.sh /run/fb-seed/firstboot-bootstrap.sh /target/var/lib/firstboot-bootstrap/
+    - if [ -f /run/fb-seed/customize.sh ]; then cp /run/fb-seed/customize.sh /target/var/lib/firstboot-bootstrap/; fi
+    - cp /run/fb-seed/firstboot-bootstrap.service /target/etc/systemd/system/firstboot-bootstrap.service
+    - curtin in-target --target=/target -- systemctl enable firstboot-bootstrap.service
+    - umount /run/fb-seed
