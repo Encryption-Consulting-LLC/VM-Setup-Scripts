@@ -9,15 +9,14 @@ the local basename.
 
 import argparse
 import logging
-import sys
 from pathlib import Path
 
 import vmkit
 from vmkit.datastore import make_directory, upload_file
 from vmkit.esxi import get_datacenter
-from vmkit.progress import setup_logging
 
-from cli._common import add_connection_args, resolve_password
+from cli._common import add_connection_args, exit_on_error, resolve_password, setup_cli_logging
+from cli._config import CONNECTION_KEYS, add_config_args, apply_config
 
 log = logging.getLogger("deploy-vm")
 
@@ -60,18 +59,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose (DEBUG) console output.",
     )
+    add_config_args(parser)
     return parser
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    apply_config(parser, CONNECTION_KEYS)
+    args = parser.parse_args()
 
     local = Path(args.file)
     if not local.is_file():
         raise SystemExit(f"Local file not found: {local}")
     remote_name = args.name or local.name
 
-    setup_logging(local.stem, args.verbose)
+    setup_cli_logging(local.stem, args.verbose)
 
     log.info("=" * 60)
     log.info("Upload file: %s -> [%s] %s/%s",
@@ -80,7 +82,7 @@ def main() -> None:
 
     password = resolve_password(args)
 
-    try:
+    with exit_on_error(log, "Upload"):
         conn = vmkit.open_connection(args.server, args.user, password, args.port)
         dc = get_datacenter(conn.content)
         make_directory(conn.content, dc, args.datastore, args.dir)
@@ -89,16 +91,6 @@ def main() -> None:
             args.datastore, dc.name, args.dir, str(local),
             remote_filename=remote_name,
         )
-    except (vmkit.AuthenticationError, vmkit.ConnectionFailedError) as exc:
-        log.error("%s", exc)
-        sys.exit(2)
-    except vmkit.VmkitError as exc:
-        log.error("Upload failed: %s", exc)
-        sys.exit(4)
-    except Exception as exc:
-        log.error("Upload failed: %s", exc)
-        log.debug("Traceback:", exc_info=True)
-        sys.exit(4)
 
     log.info("Done. Uploaded to [%s] %s/%s", args.datastore, args.dir, remote_name)
 

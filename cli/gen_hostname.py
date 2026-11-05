@@ -9,6 +9,7 @@ from pathlib import Path
 
 import configgen
 from cli._common import arg_validator
+from cli._config import add_config_args, apply_config
 
 _DEFAULT_OUTPUT = {"linux": "10-hostname.sh", "windows": "10-hostname.ps1"}
 
@@ -40,11 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
         "-o", "--output", default=None, metavar="FILE",
         help="Output path. Defaults to 10-hostname.sh (linux) / 10-hostname.ps1 (windows).",
     )
+    add_config_args(parser)
     return parser
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    apply_config(parser, {"platform"})
+    args = parser.parse_args()
     script = configgen.render_hostname(args.platform, args.hostname)
 
     output_path = Path(args.output or _DEFAULT_OUTPUT[args.platform])

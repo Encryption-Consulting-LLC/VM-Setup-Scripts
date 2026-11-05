@@ -14,14 +14,19 @@ ISO at clone time (clone-vm) for per-VM config.
 
 import argparse
 import logging
-import sys
 
 import configgen
 import vmkit
-from vmkit.progress import setup_logging
 from vmkit.validate import validate_cpus, validate_iso_path, validate_mac, validate_memory
 
-from cli._common import add_connection_args, arg_validator, resolve_password
+from cli._common import (
+    add_connection_args,
+    arg_validator,
+    exit_on_error,
+    resolve_password,
+    setup_cli_logging,
+)
+from cli._config import CONNECTION_KEYS, add_config_args, apply_config
 
 log = logging.getLogger("deploy-vm")
 
@@ -79,12 +84,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose (DEBUG) console output.",
     )
+    add_config_args(parser)
     return parser
 
 
 def main() -> None:
-    args = build_parser().parse_args()
-    setup_logging(args.name, args.verbose)
+    parser = build_parser()
+    # Connection settings only: a profile's cpus/ram must not silently resize the VM.
+    apply_config(parser, CONNECTION_KEYS)
+    args = parser.parse_args()
+    setup_cli_logging(args.name, args.verbose)
 
     log.info("=" * 60)
     log.info("Update VM: %s  (datastore: %s)", args.name, args.datastore)
@@ -92,7 +101,7 @@ def main() -> None:
 
     password = resolve_password(args)
 
-    try:
+    with exit_on_error(log, "Update"):
         conn = vmkit.open_connection(args.server, args.user, password, args.port)
         result = vmkit.update_workflow(
             conn,
@@ -105,19 +114,6 @@ def main() -> None:
             remove_iso=args.remove_iso,
             power_on=args.power_on,
         )
-    except (vmkit.AuthenticationError, vmkit.ConnectionFailedError) as exc:
-        log.error("%s", exc)
-        sys.exit(2)
-    except vmkit.VmNotFoundError as exc:
-        log.error("%s Aborting.", exc)
-        sys.exit(3)
-    except vmkit.VmkitError as exc:
-        log.error("Update failed: %s", exc)
-        sys.exit(4)
-    except Exception as exc:
-        log.error("Update failed: %s", exc)
-        log.debug("Traceback:", exc_info=True)
-        sys.exit(4)
 
     log.info("Done. VM '%s' updated: %d CPUs, %d MB RAM, ISO %s.",
              result.name, result.cpus, result.mem_mb, result.iso_action)

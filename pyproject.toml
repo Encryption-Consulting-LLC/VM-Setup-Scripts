@@ -11,6 +11,8 @@ dependencies = [
 ]
 
 [project.scripts]
+deploy-vm = "cli.deploy_vm:main"
+bake-base = "cli.bake_base:main"
 clone-vm = "cli.clone_vm:main"
 update-vm = "cli.update_vm:main"
 pack-iso = "cli.pack_iso:main"
@@ -28,5 +30,10 @@ isokit = { git = "https://github.com/Arnesh-EC/isokit.git", tag = "v0.4.0" }
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
+
 [tool.hatch.build.targets.wheel]
-packages = ["cli"]
+packages = ["cli", "recipes"]

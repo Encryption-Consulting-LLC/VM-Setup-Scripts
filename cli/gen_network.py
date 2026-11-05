@@ -16,12 +16,10 @@ from pathlib import Path
 
 import configgen
 from configgen import NetworkConfig, ValidationError
-from cli._common import arg_validator
+from cli._common import DEFAULT_LINUX_BACKEND, arg_validator
+from cli._config import NETWORK_KEYS, add_config_args, apply_config
 
 _DEFAULT_OUTPUT = {"linux": "20-network.sh", "windows": "20-network.ps1"}
-
-# The base VM is Ubuntu Server, whose network is managed by netplan.
-_DEFAULT_LINUX_BACKEND = "netplan"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,13 +44,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--backend", default=None, choices=configgen.LINUX_BACKENDS,
-        help=f"Linux network stack the script configures (default: {_DEFAULT_LINUX_BACKEND}). "
+        help=f"Linux network stack the script configures (default: {DEFAULT_LINUX_BACKEND}). "
              "Must match the base image; invalid for --platform windows.",
     )
     parser.add_argument(
-        "--dhcp", action="store_true",
+        "--dhcp", action=argparse.BooleanOptionalAction, default=False,
         help="Configure via DHCP instead of a static IP. "
-             "Makes --ip/--prefix/--gateway invalid and --dns1 optional.",
+             "Makes --ip/--prefix/--gateway invalid and --dns1 optional. "
+             "--no-dhcp overrides a DHCP profile.",
     )
     parser.add_argument(
         "--ip", type=arg_validator(configgen.validate_ipv4),
@@ -82,19 +81,22 @@ def build_parser() -> argparse.ArgumentParser:
         "-o", "--output", default=None, metavar="FILE",
         help="Output path. Defaults to 20-network.sh (linux) / 20-network.ps1 (windows).",
     )
+    add_config_args(parser)
     return parser
 
 
 def main() -> None:
     parser = build_parser()
+    applied = apply_config(parser, NETWORK_KEYS)
     args = parser.parse_args()
 
     if args.platform == "windows":
-        if args.backend is not None:
+        # A Linux backend in [defaults] must not break Windows; only a typed one is an error.
+        if args.backend is not None and args.backend != applied.get("backend"):
             parser.error("--backend is a Linux-only option; Windows has a single network stack.")
         backend = None
     else:
-        backend = args.backend or _DEFAULT_LINUX_BACKEND
+        backend = args.backend or DEFAULT_LINUX_BACKEND
 
     try:
         cfg = NetworkConfig(
