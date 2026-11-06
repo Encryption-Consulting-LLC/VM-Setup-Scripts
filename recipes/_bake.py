@@ -26,7 +26,7 @@ import vmkit
 from isokit import IsoContents, build_config_iso
 from vmkit.esxi import get_vm_by_name
 
-from recipes.errors import BakeTimeoutError, SetupFilesNotFoundError
+from recipes.errors import BakeTimeoutError, PowerOffTimeoutError, SetupFilesNotFoundError
 
 log = logging.getLogger("recipes.bake")
 
@@ -35,6 +35,13 @@ RUNNER_SCRIPT = "firstboot-runner.sh"
 
 DEFAULT_TIMEOUT_S = 30 * 60
 DEFAULT_POLL_S = 15.0
+
+#: What a bake timeout means and where to look.
+BAKE_TIMEOUT_HINT = (
+    "so the bake most likely failed: firstboot-setup.sh powers the VM off when it "
+    "succeeds. Read /var/log/firstboot.log and /var/log/firstboot-error.log on its "
+    "console. The bake disc is still attached."
+)
 
 
 @dataclass(frozen=True)
@@ -69,11 +76,15 @@ def wait_for_power_off(
     should_cancel: Callable[[], bool] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    timeout_error: type[PowerOffTimeoutError] = BakeTimeoutError,
+    timeout_hint: str = BAKE_TIMEOUT_HINT,
 ) -> None:
     """Block until VM ``name`` reports poweredOff.
 
-    Raises ``VmNotFoundError`` if it vanishes, ``BakeTimeoutError`` after
-    ``timeout_s``, and ``vmkit.TaskCancelledError`` if ``should_cancel`` returns true.
+    Raises ``VmNotFoundError`` if it vanishes, ``timeout_error`` (a bake's, by
+    default) after ``timeout_s`` -- its message ends with ``timeout_hint``, which
+    says what the timeout means for that guest and where to look -- and
+    ``vmkit.TaskCancelledError`` if ``should_cancel`` returns true.
     """
     deadline = clock() + timeout_s
     while True:
@@ -84,11 +95,8 @@ def wait_for_power_off(
         if state == "poweredOff":
             return
         if clock() >= deadline:
-            raise BakeTimeoutError(
-                f"VM '{name}' is still {state} after {timeout_s / 60:g} min, so the bake "
-                "most likely failed: firstboot-setup.sh powers the VM off when it "
-                "succeeds. Read /var/log/firstboot.log and /var/log/firstboot-error.log "
-                "on its console. The bake disc is still attached."
+            raise timeout_error(
+                f"VM '{name}' is still {state} after {timeout_s / 60:g} min, {timeout_hint}"
             )
         if should_cancel is not None and should_cancel():
             raise vmkit.TaskCancelledError(f"Cancelled while waiting for '{name}' to power off.")

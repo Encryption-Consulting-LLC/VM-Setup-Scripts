@@ -45,11 +45,15 @@ PROJECT_FILE = "vm-setup.toml"
 CONNECTION_KEYS = frozenset({"server", "user", "port", "datastore"})
 #: Settings for cloning a VM (clone-vm, deploy-vm, bake-base).
 CLONE_KEYS = CONNECTION_KEYS | {"base", "network", "guest_os", "cpus", "ram", "max_usage"}
+#: Settings for installing a -base-pre VM from scratch (install-base).
+INSTALL_KEYS = CONNECTION_KEYS | {
+    "network", "guest_os", "cpus", "ram", "disk_gb", "installer", "seed"
+}
 #: Settings for the generated first-boot network script (gen-network, deploy-vm).
 NETWORK_KEYS = frozenset(
     {"platform", "backend", "dhcp", "prefix", "gateway", "dns1", "dns2", "dns_suffix"}
 )
-KNOWN_KEYS = CLONE_KEYS | NETWORK_KEYS
+KNOWN_KEYS = CLONE_KEYS | NETWORK_KEYS | INSTALL_KEYS
 
 _SECRET_KEYS = frozenset({"password"})
 

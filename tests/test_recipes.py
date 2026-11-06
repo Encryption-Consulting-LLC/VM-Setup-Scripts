@@ -165,3 +165,102 @@ def test_bake_keep_disc(monkeypatch, fake_clone, fake_update):
     result = recipes.bake(CONN, name="ub-base", pre="ub-base-pre", setup_dir=SETUP_DIR,
                           datastore="ds1", detach_iso=False, cpus=2, mem_mb=4096)
     assert result.finished and not result.iso_detached and fake_update == []
+
+
+# --------------------------------------------------------------------------- #
+# install                                                                     #
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def fake_create(monkeypatch):
+    calls = []
+
+    def _create(conn, **kwargs):
+        calls.append(kwargs)
+        return vmkit.CreateResult(
+            name=kwargs["name"], mac="00:50:56:00:00:02", guest_os=kwargs["guest_os"],
+            disk_gb=kwargs["disk_gb"], cdroms=list(kwargs["cdroms"]), total_vms=4,
+            powered_on=kwargs["power_on"],
+        )
+
+    monkeypatch.setattr(vmkit, "create_workflow", _create)
+    return calls
+
+
+def _install(**overrides):
+    kwargs = dict(name="ub-base-pre", datastore="datastore1 (3)",
+                  installer="ISO/ubuntu-autoinstall.iso", seed="ISO/seed.iso")
+    kwargs.update(overrides)
+    return recipes.install(CONN, **kwargs)
+
+
+def test_install_creates_with_installer_first_then_waits_and_detaches(
+    monkeypatch, fake_create, fake_update
+):
+    monkeypatch.setattr(bake_module, "get_vm_by_name", FakeVms(["poweredOn", "poweredOff"]))
+    result = _install(poll_s=0)
+    (create,) = fake_create
+    # EFI boots sata0:0 on a blank disk, so the installer must be first.
+    assert create["cdroms"] == ["ISO/ubuntu-autoinstall.iso", "ISO/seed.iso"]
+    assert create["power_on"] is True
+    assert create["guest_os"] == "ubuntu-64" and create["disk_gb"] == 40
+    assert fake_update == [{"name": "ub-base-pre", "datastore": "datastore1 (3)",
+                            "remove_iso": True}]
+    assert result.finished and result.discs_detached
+
+
+def test_install_passes_create_options_through(monkeypatch, fake_create, fake_update):
+    monkeypatch.setattr(bake_module, "get_vm_by_name", FakeVms(["poweredOff"]))
+    _install(cpus=4, mem_mb=8192, network="Lab", thin=False, disk_gb=80)
+    (create,) = fake_create
+    assert (create["cpus"], create["mem_mb"], create["network"]) == (4, 8192, "Lab")
+    assert create["thin"] is False and create["disk_gb"] == 80
+
+
+def test_install_no_wait(fake_create, fake_update):
+    result = _install(wait=False)
+    assert not result.finished and not result.discs_detached and fake_update == []
+
+
+def test_install_keep_discs(monkeypatch, fake_create, fake_update):
+    monkeypatch.setattr(bake_module, "get_vm_by_name", FakeVms(["poweredOff"]))
+    result = _install(detach_discs=False)
+    assert result.finished and not result.discs_detached and fake_update == []
+
+
+def test_install_timeout_keeps_discs_and_explains(monkeypatch, fake_create, fake_update):
+    monkeypatch.setattr(bake_module, "get_vm_by_name", FakeVms(["poweredOn"]))
+    # install() takes no clock/sleep hooks; a near-zero timeout and poll keep it fast.
+    with pytest.raises(recipes.InstallTimeoutError, match="firstboot-bootstrap.log") as info:
+        _install(timeout_s=0.01, poll_s=0.001)
+    assert "Both discs are still attached" in str(info.value)
+    assert fake_update == []  # never detach a VM that may still be mid-install
+
+
+def test_install_timeout_is_not_a_bake_timeout_but_shares_exit_code_7():
+    assert not issubclass(recipes.InstallTimeoutError, recipes.BakeTimeoutError)
+    assert issubclass(recipes.InstallTimeoutError, recipes.PowerOffTimeoutError)
+    assert issubclass(recipes.BakeTimeoutError, recipes.PowerOffTimeoutError)
+
+
+def test_install_missing_iso_propagates(monkeypatch, fake_update):
+    def _create(conn, **kwargs):
+        raise vmkit.DatastoreFileNotFoundError("ISO not found on the datastore: [ds] x.iso")
+
+    monkeypatch.setattr(vmkit, "create_workflow", _create)
+    with pytest.raises(vmkit.DatastoreFileNotFoundError):
+        _install()
+    assert fake_update == []
+
+
+def test_bake_timeout_message_is_unchanged(monkeypatch):
+    monkeypatch.setattr(bake_module, "get_vm_by_name", FakeVms(["poweredOn"]))
+    now = [0.0]
+    with pytest.raises(recipes.BakeTimeoutError) as info:
+        recipes.wait_for_power_off(CONN, "b", timeout_s=60, poll_s=15,
+                                   sleep=lambda s: now.__setitem__(0, now[0] + s),
+                                   clock=lambda: now[0])
+    assert str(info.value) == (
+        "VM 'b' is still poweredOn after 1 min, so the bake most likely failed: "
+        "firstboot-setup.sh powers the VM off when it succeeds. Read /var/log/firstboot.log "
+        "and /var/log/firstboot-error.log on its console. The bake disc is still attached."
+    )

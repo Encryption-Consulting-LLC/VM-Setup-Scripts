@@ -13,7 +13,7 @@ import isokit
 import vmkit
 from vmkit.progress import setup_logging
 
-from recipes import BakeTimeoutError
+from recipes import PowerOffTimeoutError
 
 PASSWORD_ENV = "VMSETUP_PASSWORD"
 
@@ -93,7 +93,7 @@ def exit_on_error(log: logging.Logger, action: str) -> Iterator[None]:
 
     2 connection / authentication, 3 VM already exists or not found,
     4 any other failure, 5 config ISO could not be built,
-    6 not enough datastore space, 7 a bake did not finish in time.
+    6 not enough datastore space, 7 a bake or install did not finish in time.
     """
     try:
         yield
@@ -109,7 +109,7 @@ def exit_on_error(log: logging.Logger, action: str) -> Iterator[None]:
     except isokit.IsoKitError as exc:
         log.error("Could not build the config ISO: %s", exc)
         sys.exit(5)
-    except BakeTimeoutError as exc:
+    except PowerOffTimeoutError as exc:
         log.error("%s", exc)
         sys.exit(7)
     except Exception as exc:
@@ -188,3 +188,4 @@ def resolve_accounts(
         (username, password if password is not None else prompt_new_password(username, parser))
         for username, password in accounts
     ]
+
