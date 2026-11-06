@@ -209,7 +209,7 @@ requires-dist = [
     { name = "configgen", git = "https://github.com/Arnesh-EC/configgen.git?tag=v0.5.0" },
     { name = "isokit", git = "https://github.com/Arnesh-EC/isokit.git?tag=v0.4.0" },
     { name = "tomli-w", specifier = ">=1.2.0" },
-    { name = "vmkit", git = "https://github.com/Arnesh-EC/vmkit.git?tag=v0.5.1" },
+    { name = "vmkit", git = "https://github.com/Arnesh-EC/vmkit.git?tag=v0.6.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -217,8 +217,8 @@ dev = [{ name = "pytest", specifier = ">=9.2.0" }]
 
 [[package]]
 name = "vmkit"
-version = "0.5.1"
-source = { git = "https://github.com/Arnesh-EC/vmkit.git?tag=v0.5.1#4bc4a7dce995439941d5014585be0f57709a5b38" }
+version = "0.6.0"
+source = { git = "https://github.com/Arnesh-EC/vmkit.git?tag=v0.6.0#68939b5767a3fab820b53c498b3006bc0ab4c4e2" }
 dependencies = [
     { name = "pyvmomi" },
     { name = "requests" },

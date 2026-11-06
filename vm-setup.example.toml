@@ -17,6 +17,7 @@ datastore = "datastore1"
 platform = "linux"
 backend = "netplan"          # must match the base image's network stack
 base = "ub-24.04-base"
+installer = "ISO/ubuntu-24.04.5-autoinstall.iso"   # install-base: on the datastore
 network = "VM Network"       # ESXi port group
 cpus = 2
 ram = 4096

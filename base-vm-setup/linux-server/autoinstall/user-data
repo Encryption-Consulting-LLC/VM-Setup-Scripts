@@ -36,12 +36,18 @@ autoinstall:
           name: "e*"
         dhcp4: true
 
-  # Installer default: LVM, root LV sized to part of the VG. Use
-  # `sizing-policy: all` to give root the whole disk, or `name: direct` for
-  # plain partitions (simplest to grow after update-vm enlarges a clone's disk).
+  # LVM with the root LV given the whole volume group. The installer default
+  # (`sizing-policy: scaled`) sizes root to about half of a 40 GB disk and leaves
+  # the rest unallocated, which every clone then inherits.
+  #
+  # No swap: the installer otherwise creates /swap.img (~4 GB), and Kubernetes
+  # nodes need swap off. Remove the `swap` block to get it back.
   storage:
     layout:
       name: lvm
+      sizing-policy: all
+    swap:
+      size: 0
 
   identity:
     hostname: @@HOSTNAME@@

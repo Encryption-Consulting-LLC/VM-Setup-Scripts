@@ -57,15 +57,18 @@ cp vm-setup.example.toml ~/.config/vm-setup/config.toml   # then edit it
 Then each operation is one command:
 
 ```sh
+install-base ub-24.04-base --seed ISO/ub-24.04-seed.iso  # autoinstall a new -base-pre
 bake-base ub-24.04-base                                  # -base-pre -> generalized base
 deploy-vm web01 --profile ubuntu --ip 192.168.1.50       # scripts -> ISO -> clone -> power on
 deploy-vm web02 --profile ubuntu --ip 192.168.1.51/24 --reset-password root
 deploy-vm web03 --profile ubuntu --ip 192.168.1.52 --dry-run   # show the long-form commands
+deploy-vm 'web-{n}' --range 61-66 --ip '192.168.1.{n}' --profile ubuntu -j 3   # six VMs, 3 at a time
 ```
 
-`deploy-vm` does steps 2–4 below in one go; `bake-base` does step 2 of
-[Building the Linux base unattended](#building-the-linux-base-unattended). With
-`--dry-run`, both print the single-step commands they stand for and change nothing.
+`deploy-vm` does steps 2–4 below in one go; `install-base` and `bake-base` do
+steps 1 and 2 of [Building the Linux base unattended](#building-the-linux-base-unattended).
+With `--dry-run`, `deploy-vm` and `bake-base` print the single-step commands they
+stand for, `install-base` prints what it would create; none of them change anything.
 The single-step commands remain for anything the shortcuts don't cover.
 
 ## End-to-end workflow
@@ -142,12 +145,13 @@ Without it, an install stops once at that prompt; type `yes` on the console.
 The remastered ISO installs onto any VM it boots that has a seed disc attached,
 with no confirmation.
 
-**1. Install `-base-pre`.** Build the seed disc, then boot a new, empty VM (EFI
-firmware, as vmkit's VMX template uses) with the Ubuntu ISO and the seed disc
-attached as two CD-ROMs:
+**1. Install `-base-pre`.** Build the seed disc and upload it and the installer
+to a datastore folder:
 ```sh
 base-vm-setup/linux-server/autoinstall/build-seed.sh -u <user> \
     --customize my-customize.sh -o isos/ub-24.04-seed.iso
+upload-file isos/ubuntu-24.04.5-autoinstall.iso --dir ISO
+upload-file isos/ub-24.04-seed.iso --dir ISO
 ```
 The install user's password comes from `$SEED_PASSWORD`, or you're prompted for
 it. `--customize` is optional: a script that runs as root on the first boot after
@@ -155,9 +159,27 @@ the install, for packages, config, agents and anything else that should be in
 every VM. Edit `autoinstall/user-data` to change disk layout, packages and the
 rest of the install itself.
 
-The VM installs, reboots, runs the bootstrap once, and **powers off**. It is then
-`-base-pre`. Detach both ISOs. If it stays running, read
-`/var/log/firstboot-bootstrap.log`.
+Then create and install the VM:
+```sh
+install-base ub-24.04-base --installer ISO/ubuntu-24.04.5-autoinstall.iso \
+    --seed ISO/ub-24.04-seed.iso          # creates ub-24.04-base-pre; --as PRE to override
+```
+ISO paths are relative to `-d`, or `"[datastore] path"` for another datastore;
+both are checked before anything is created. It creates the VM with a blank disk
+(`--disk-gb`, default 40, thin unless `--thick`), EFI, and the installer on the
+first CD-ROM so it boots, then powers it on. The VM installs, reboots, runs the
+bootstrap once, and **powers off**; `install-base` waits for that (`--timeout`,
+default 60 min) and then detaches both discs. That powered-off VM is
+`-base-pre`. The port group (`--network`) needs DHCP for the install.
+
+Detaching matters: the remastered installer installs without asking, so a VM
+that boots it again wipes its disk. If the install times out, both discs are still
+attached; on the console, an installer screen means the install failed, a login
+prompt means the bootstrap did (read `/var/log/firstboot-bootstrap.log`).
+
+The VM is built from the same VMX template as every clone, so its NIC sits at the
+same PCI slot and has the same interface name as its clones. A `-base-pre` made
+by hand in the Host Client doesn't, and `bake-base` warns about it.
 
 **2. Bake `-base`.**
 ```sh
@@ -186,11 +208,41 @@ ISO (`update-vm -n ub-24.04-base -s ... -u root --remove-iso`).
 Pack the runner with `--file`, never as a script. Listed as a script, the runner
 would execute itself and recurse.
 
+## Many VMs at once
+
+`deploy-vm` and `update-vm` take a `{n}` placeholder and `--range`, and do one VM
+per number, `-j` at a time (default 3):
+
+```sh
+deploy-vm 'cbom-ha-{n}' --range 91-96 --ip '192.168.4.{n}/16' --profile k8s -j 3
+update-vm -n 'cbom-ha-{n}' --range 91-96 -c 4 -r 8192 --remove-iso -o -j 6
+```
+
+- `--range` takes `91-96`, `91,92,95` or `1-3,7`; a leading zero pads (`01-06`).
+  `{n}` works in `NAME`, `--ip` and `--keep-iso` (deploy-vm), and in `-n` and
+  `--iso` (update-vm).
+- **Checked as a whole before anything starts.** For a deploy, that means names
+  are unique and not already on the host, static IPs are unique, every VM's
+  scripts render, and the datastore has room for *all* the clones together
+  (separate commands would each see the same free space and each "fit"). Memory
+  overcommit is reported. An update checks that every VM exists. Problems are
+  listed together and nothing is created.
+- **One failure doesn't stop the rest.** Every VM is attempted, then a per-VM
+  summary is printed. A failed clone's datastore files are deleted, unless the VM
+  had already registered; then it is left for inspection.
+- MACs are drawn up front so none repeat within the batch. One ESXi session per
+  worker; one password prompt. Console lines are prefixed with the VM's name.
+- Ctrl-C stops new VMs from starting and cancels running vSphere tasks; a second
+  Ctrl-C aborts. `--dry-run` prints each VM's equivalent commands.
+- `update-vm` powers a running VM off **hard** before updating it. Shut the
+  guests down cleanly first when that matters.
+
 ## CLIs
 
 | Command       | Backed by   | Purpose                                      |
 |---------------|-------------|----------------------------------------------|
 | `deploy-vm`   | recipes     | Generate config, pack the ISO, clone and power on — in one step |
+| `install-base`| recipes     | Create and autoinstall a Linux `-base-pre` VM from scratch |
 | `bake-base`   | recipes     | Generalize a Linux `-base-pre` clone into the base VM |
 | `gen-hostname`| configgen   | Generate a per-VM hostname first-boot script |
 | `gen-network` | configgen   | Generate a per-VM network first-boot script  |
@@ -206,7 +258,9 @@ The ESXi password comes from `-p`, else `$VMSETUP_PASSWORD`, else a prompt.
 
 Exit codes for the ESXi commands: `2` connection or login failed, `3` VM already
 exists / not found, `4` other failure, `5` config ISO could not be built, `6` not
-enough datastore space, `7` a bake did not finish within `--timeout`.
+enough datastore space, `7` a bake or install did not finish within `--timeout`,
+`8` one or more VMs in a `--range` batch failed (see the summary), `130` a batch
+was cancelled with Ctrl-C.
 
 ## Config file
 
@@ -233,7 +287,8 @@ dns1 = "192.168.1.10"
 - **Precedence:** flag > profile > `[defaults]` > built-in default.
 - **Keys** are the long option names: `server user port datastore base network
   guest-os cpus ram max-usage platform backend dhcp prefix gateway dns1 dns2
-  dns-suffix`. Each command uses the ones it has an option for; `update-vm` and
+  dns-suffix`, plus `installer seed disk-gb` for `install-base`. Each command uses
+  the ones it has an option for; `update-vm` and
   `upload-file` take only the connection keys (`server user port datastore`), so a
   profile's `cpus`/`ram` can never resize an existing VM.
 - **Not configurable:** anything naming one VM (name, IP, MAC), passwords, and
