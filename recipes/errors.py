@@ -20,3 +20,13 @@ class BakeTimeoutError(PowerOffTimeoutError):
 class InstallTimeoutError(PowerOffTimeoutError):
     """The autoinstall VM did not power itself off within the allowed time."""
 
+
+class BatchPreflightError(RecipeError):
+    """A batch failed its checks before anything started. ``problems`` lists them all."""
+
+    def __init__(self, problems: list[str]):
+        self.problems = list(problems)
+        super().__init__(
+            f"Batch not started: {len(self.problems)} problem(s):\n"
+            + "\n".join(f"  - {p}" for p in self.problems)
+        )

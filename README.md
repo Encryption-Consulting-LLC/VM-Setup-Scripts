@@ -62,6 +62,7 @@ bake-base ub-24.04-base                                  # -base-pre -> generali
 deploy-vm web01 --profile ubuntu --ip 192.168.1.50       # scripts -> ISO -> clone -> power on
 deploy-vm web02 --profile ubuntu --ip 192.168.1.51/24 --reset-password root
 deploy-vm web03 --profile ubuntu --ip 192.168.1.52 --dry-run   # show the long-form commands
+deploy-vm 'web-{n}' --range 61-66 --ip '192.168.1.{n}' --profile ubuntu -j 3   # six VMs, 3 at a time
 ```
 
 `deploy-vm` does steps 2–4 below in one go; `install-base` and `bake-base` do
@@ -207,6 +208,35 @@ ISO (`update-vm -n ub-24.04-base -s ... -u root --remove-iso`).
 Pack the runner with `--file`, never as a script. Listed as a script, the runner
 would execute itself and recurse.
 
+## Many VMs at once
+
+`deploy-vm` and `update-vm` take a `{n}` placeholder and `--range`, and do one VM
+per number, `-j` at a time (default 3):
+
+```sh
+deploy-vm 'cbom-ha-{n}' --range 91-96 --ip '192.168.4.{n}/16' --profile k8s -j 3
+update-vm -n 'cbom-ha-{n}' --range 91-96 -c 4 -r 8192 --remove-iso -o -j 6
+```
+
+- `--range` takes `91-96`, `91,92,95` or `1-3,7`; a leading zero pads (`01-06`).
+  `{n}` works in `NAME`, `--ip` and `--keep-iso` (deploy-vm), and in `-n` and
+  `--iso` (update-vm).
+- **Checked as a whole before anything starts.** For a deploy, that means names
+  are unique and not already on the host, static IPs are unique, every VM's
+  scripts render, and the datastore has room for *all* the clones together
+  (separate commands would each see the same free space and each "fit"). Memory
+  overcommit is reported. An update checks that every VM exists. Problems are
+  listed together and nothing is created.
+- **One failure doesn't stop the rest.** Every VM is attempted, then a per-VM
+  summary is printed. A failed clone's datastore files are deleted, unless the VM
+  had already registered; then it is left for inspection.
+- MACs are drawn up front so none repeat within the batch. One ESXi session per
+  worker; one password prompt. Console lines are prefixed with the VM's name.
+- Ctrl-C stops new VMs from starting and cancels running vSphere tasks; a second
+  Ctrl-C aborts. `--dry-run` prints each VM's equivalent commands.
+- `update-vm` powers a running VM off **hard** before updating it. Shut the
+  guests down cleanly first when that matters.
+
 ## CLIs
 
 | Command       | Backed by   | Purpose                                      |
@@ -228,7 +258,9 @@ The ESXi password comes from `-p`, else `$VMSETUP_PASSWORD`, else a prompt.
 
 Exit codes for the ESXi commands: `2` connection or login failed, `3` VM already
 exists / not found, `4` other failure, `5` config ISO could not be built, `6` not
-enough datastore space, `7` a bake or install did not finish within `--timeout`.
+enough datastore space, `7` a bake or install did not finish within `--timeout`,
+`8` one or more VMs in a `--range` batch failed (see the summary), `130` a batch
+was cancelled with Ctrl-C.
 
 ## Config file
 

@@ -5,7 +5,7 @@ import getpass
 import logging
 import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
 import configgen
@@ -13,7 +13,13 @@ import isokit
 import vmkit
 from vmkit.progress import setup_logging
 
+import recipes
 from recipes import PowerOffTimeoutError
+
+#: Exit code for a batch in which at least one VM failed (others may have succeeded).
+EXIT_BATCH_FAILED = 8
+#: Exit code for a batch stopped with Ctrl-C.
+EXIT_CANCELLED = 130
 
 PASSWORD_ENV = "VMSETUP_PASSWORD"
 
@@ -94,6 +100,7 @@ def exit_on_error(log: logging.Logger, action: str) -> Iterator[None]:
     2 connection / authentication, 3 VM already exists or not found,
     4 any other failure, 5 config ISO could not be built,
     6 not enough datastore space, 7 a bake or install did not finish in time.
+    (8, a batch with failed VMs, is set by ``batch_exit_code`` after the run.)
     """
     try:
         yield
@@ -189,3 +196,76 @@ def resolve_accounts(
         for username, password in accounts
     ]
 
+
+# --------------------------------------------------------------------------- #
+# Batches (--range)                                                           #
+# --------------------------------------------------------------------------- #
+class _BatchTagFilter(logging.Filter):
+    """Prefix each line logged from a batch worker with its VM's name.
+
+    Installed on handlers, so one record may pass several (console + file); the
+    marker keeps it from being tagged twice.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        name = recipes.current_item.get()
+        if name and not getattr(record, "_batch_tagged", False):
+            record.msg = f"[{name}] {record.msg}"
+            record._batch_tagged = True
+        return True
+
+
+def tag_batch_log_lines() -> None:
+    """After ``setup_cli_logging``: tag concurrent workers' log lines by VM."""
+    tag = _BatchTagFilter()
+    for logger_name in ("vmkit", *CLI_LOGGERS):
+        for handler in logging.getLogger(logger_name).handlers:
+            handler.addFilter(tag)
+
+
+def batch_connector(args: argparse.Namespace, password: str) -> Callable[[], vmkit.Connection]:
+    """A factory opening one ESXi session per batch worker (closed by the batch)."""
+
+    def connect() -> vmkit.Connection:
+        return vmkit.open_connection(
+            args.server, args.user, password, args.port, register_atexit=False
+        )
+
+    return connect
+
+
+def batch_range(args: argparse.Namespace, parser: argparse.ArgumentParser) -> list[str]:
+    """The numbers of ``--range``, or exit with a usage error."""
+    try:
+        return recipes.parse_range(args.range)
+    except ValueError as exc:
+        parser.error(f"--range: {exc}")
+
+
+def log_batch_summary(
+    log: logging.Logger,
+    result: "recipes.BatchResult",
+    describe: Callable[[object], str],
+) -> None:
+    """One line per VM, in batch order. ``describe(result)`` details a success."""
+    log.info("=" * 60)
+    log.info("Batch: %d succeeded, %d failed, %d skipped%s",
+             len(result.succeeded), len(result.failed), len(result.skipped),
+             " (cancelled)" if result.cancelled else "")
+    width = max((len(o.name) for o in result.outcomes), default=0)
+    for o in result.outcomes:
+        if o.ok:
+            log.info("  %-*s  ok       %s", width, o.name, describe(o.result))
+        elif o.skipped:
+            log.info("  %-*s  skipped  %s", width, o.name, o.note)
+        else:
+            detail = f"{o.error}" + (f" ({o.note})" if o.note else "")
+            log.error("  %-*s  FAILED   %s", width, o.name, detail)
+    log.info("=" * 60)
+
+
+def batch_exit_code(result: "recipes.BatchResult") -> int:
+    """0 if every VM succeeded, 130 if cancelled, else 8."""
+    if result.ok:
+        return 0
+    return EXIT_CANCELLED if result.cancelled else EXIT_BATCH_FAILED

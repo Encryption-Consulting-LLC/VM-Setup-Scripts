@@ -8,11 +8,15 @@ given. --dry-run prints those equivalent commands instead of running anything.
 
 Settings that do not change from VM to VM (ESXi host, base, gateway, DNS, ...)
 belong in a config profile; see cli/_config.py or the README.
+
+Many VMs at once: put {n} in NAME (and --ip, --keep-iso) and give --range; the
+batch is checked as a whole, then deployed -j at a time (recipes.deploy_batch).
 """
 
 import argparse
 import logging
 import shlex
+import sys
 from pathlib import Path
 
 import configgen
@@ -26,11 +30,16 @@ from cli._common import (
     DEFAULT_LINUX_BACKEND,
     add_connection_args,
     arg_validator,
+    batch_connector,
+    batch_exit_code,
+    batch_range,
     exit_on_error,
+    log_batch_summary,
     parse_accounts,
     resolve_accounts,
     resolve_password,
     setup_cli_logging,
+    tag_batch_log_lines,
 )
 from cli._config import CLONE_KEYS, NETWORK_KEYS, add_config_args, apply_config
 
@@ -60,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  %(prog)s web01 --profile ubuntu --ip 192.168.1.50\n"
             "  %(prog)s web01 --profile ubuntu --ip 192.168.1.50/24 --reset-password root\n"
             "  %(prog)s web02 --profile ubuntu --dhcp --dry-run\n"
+            "  %(prog)s 'cbom-ha-{n}' --range 91-96 --ip '192.168.4.{n}/16' --profile k8s -j 3\n"
             "  %(prog)s dc01 --platform windows --ip 10.0.0.10/24 --gateway 10.0.0.1 \\\n"
             "      --dns1 10.0.0.10 -s esxi.example.com -u root -b ws-2025-base\n\n"
             "Any option except NAME, --ip, --mac-address, the passwords and the\n"
@@ -67,8 +77,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "name", type=arg_validator(configgen.validate_hostname_rfc), metavar="NAME",
-        help="VM name and hostname (RFC 1123).",
+        "name", metavar="NAME",
+        help="VM name and hostname (RFC 1123). With --range, a template containing {n}.",
     )
     parser.add_argument(
         "--platform", required=True, choices=configgen.PLATFORMS,
@@ -77,8 +87,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     net = parser.add_argument_group("guest network (the generated network script)")
     net.add_argument(
-        "--ip", type=arg_validator(_ip_or_cidr), metavar="ADDR[/LEN]",
-        help="Static IPv4 address, optionally with its prefix length. Required unless --dhcp.",
+        "--ip", metavar="ADDR[/LEN]",
+        help="Static IPv4 address, optionally with its prefix length. Required unless --dhcp. "
+             "With --range, a template containing {n}.",
     )
     net.add_argument(
         "--prefix", type=arg_validator(configgen.validate_prefix), metavar="LEN",
@@ -143,11 +154,25 @@ def build_parser() -> argparse.ArgumentParser:
     vm.add_argument("--skip-disk-check", action="store_true",
                     help="Skip the datastore free-space check.")
 
+    batch = parser.add_argument_group("many VMs at once")
+    batch.add_argument(
+        "--range", metavar="SPEC",
+        help="Deploy one VM per number, substituted for {n} in NAME, --ip and --keep-iso: "
+             "91-96, 91,92,95 or 1-3,7. A leading zero pads: 01-06. The batch is checked "
+             "as a whole (names, IPs, datastore space) before any VM starts.",
+    )
+    batch.add_argument(
+        "-j", "--jobs", type=int, default=recipes.DEFAULT_JOBS, metavar="N",
+        help=f"With --range: VMs deployed at a time (default: {recipes.DEFAULT_JOBS}). "
+             "A failed VM does not stop the others.",
+    )
+
     run = parser.add_argument_group("run")
     run.add_argument("--no-power-on", dest="power_on", action="store_false",
                      help="Register the VM but leave it powered off.")
     run.add_argument("--keep-iso", type=Path, metavar="FILE",
-                     help="Also save the config ISO here (default: temporary, deleted).")
+                     help="Also save the config ISO here (default: temporary, deleted). "
+                          "With --range, must contain {n}.")
     run.add_argument("--dry-run", action="store_true",
                      help="Validate and print the equivalent single-step commands; "
                           "change nothing.")
@@ -158,8 +183,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _network_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> NetworkConfig:
-    ip, cidr_prefix = args.ip or (None, None)
+def _network_config(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    ip_value: tuple[str, int | None] | None,
+) -> NetworkConfig:
+    ip, cidr_prefix = ip_value or (None, None)
     dhcp, prefix, gateway = args.dhcp, args.prefix, args.gateway
     # Profile values must not fight what was typed: --ip beats a DHCP profile,
     # and --dhcp drops a static profile's prefix and gateway.
@@ -191,12 +220,15 @@ def _backend(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str |
 
 
 def _equivalent_commands(
-    args: argparse.Namespace, spec: recipes.DeploySpec, usernames: list[str]
+    args: argparse.Namespace,
+    spec: recipes.DeploySpec,
+    usernames: list[str],
+    keep_iso: Path | None,
 ) -> list[list[str]]:
     """The single-step commands this deploy stands for (no passwords)."""
     plat, cfg = spec.platform, spec.network
     sfx = recipes.SCRIPT_SUFFIX[plat]
-    iso = str(args.keep_iso or f"isos/{spec.name}-config.iso")
+    iso = str(keep_iso or f"isos/{spec.name}-config.iso")
 
     cmds = [["gen-hostname", "--platform", plat, "-n", spec.name, "-o", f"10-hostname{sfx}"]]
 
@@ -244,6 +276,60 @@ def _equivalent_commands(
     return cmds
 
 
+def _targets(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> list[tuple[str, str | None, Path | None]]:
+    """``(name, ip_text, keep_iso)`` per VM: one, or one per --range number."""
+    placeholder = recipes.PLACEHOLDER
+    keep = str(args.keep_iso) if args.keep_iso else None
+    if args.range is None:
+        for flag, value in (("NAME", args.name), ("--ip", args.ip), ("--keep-iso", keep)):
+            if value and placeholder in value:
+                parser.error(f"{flag} contains {placeholder} but --range was not given.")
+        return [(args.name, args.ip, args.keep_iso)]
+
+    if placeholder not in args.name:
+        parser.error(f"--range needs {placeholder} in NAME, e.g. 'web-{placeholder}'.")
+    if args.ip and placeholder not in args.ip:
+        parser.error(f"--ip has no {placeholder}: every VM in the batch would get the same "
+                     "address. Use e.g. '192.168.4.{n}/24', or --dhcp.")
+    if args.mac_address:
+        parser.error("--mac-address cannot be used with --range: VMs would share it.")
+    if keep and placeholder not in keep:
+        parser.error(f"--keep-iso needs {placeholder} with --range, or every VM's ISO "
+                     "would overwrite the last.")
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1.")
+    return [
+        (recipes.expand(args.name, n),
+         recipes.expand(args.ip, n) if args.ip else None,
+         Path(recipes.expand(keep, n)) if keep else None)
+        for n in batch_range(args, parser)
+    ]
+
+
+def _spec(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    name: str,
+    ip_text: str | None,
+    backend: str | None,
+    accounts: tuple[tuple[str, str], ...],
+) -> recipes.DeploySpec:
+    """Validate one VM's name and address and build its spec."""
+    try:
+        configgen.validate_hostname_rfc(name)
+        ip_value = _ip_or_cidr(ip_text) if ip_text else None
+    except ValueError as exc:
+        parser.error(f"{name}: {exc}" if args.range else str(exc))
+    return recipes.DeploySpec(
+        name=name, platform=args.platform, network=_network_config(args, parser, ip_value),
+        backend=backend, accounts=accounts,
+        scripts=tuple(Path(p) for p in args.script),
+        files=tuple(Path(p) for p in args.payload),
+    )
+
+
 def main() -> None:
     parser = build_parser()
     from_config = apply_config(parser, CLONE_KEYS | NETWORK_KEYS)
@@ -254,39 +340,56 @@ def main() -> None:
         if not Path(path).is_file():
             parser.error(f"file not found: {path}")
 
-    cfg = _network_config(args, parser)
+    targets = _targets(args, parser)
     backend = _backend(args, parser)
     accounts = args.reset_password or []
 
     # Validate everything renderable before prompting or connecting. Passwords
     # are checked as they are parsed or prompted for, so a placeholder stands in.
-    preview = recipes.DeploySpec(
-        name=args.name, platform=args.platform, network=cfg, backend=backend,
-        accounts=tuple((user, "placeholder") for user, _ in accounts),
-    )
-    try:
-        recipes.render_scripts(preview)
-    except ValidationError as exc:
-        parser.error(str(exc))
+    placeholder_accounts = tuple((user, "placeholder") for user, _ in accounts)
+    previews = [_spec(args, parser, name, ip, backend, placeholder_accounts)
+                for name, ip, _ in targets]
+    for preview in previews:
+        try:
+            recipes.render_scripts(preview)
+        except ValidationError as exc:
+            parser.error(f"{preview.name}: {exc}" if args.range else str(exc))
 
     if args.dry_run:
-        print(f"Dry run: deploy '{args.name}' from base '{args.base}' on {args.server}.")
-        print("Equivalent commands:")
-        for cmd in _equivalent_commands(args, preview, [user for user, _ in accounts]):
-            print("  " + shlex.join(cmd))
+        usernames = [user for user, _ in accounts]
+        if args.range:
+            print(f"Dry run: deploy {len(targets)} VMs from base '{args.base}' on "
+                  f"{args.server}, {min(args.jobs, len(targets))} at a time. Each is "
+                  "equivalent to:")
+        for preview, (_, _, keep_iso) in zip(previews, targets):
+            if args.range:
+                print(f"\n  # {preview.name}")
+            else:
+                print(f"Dry run: deploy '{preview.name}' from base '{args.base}' on "
+                      f"{args.server}.")
+                print("Equivalent commands:")
+            for cmd in _equivalent_commands(args, preview, usernames, keep_iso):
+                print("  " + shlex.join(cmd))
         return
 
-    spec = recipes.DeploySpec(
-        name=args.name, platform=args.platform, network=cfg, backend=backend,
-        accounts=tuple(resolve_accounts(accounts, parser)),
-        scripts=tuple(Path(p) for p in args.script),
-        files=tuple(Path(p) for p in args.payload),
+    resolved = tuple(resolve_accounts(accounts, parser))
+    specs = [_spec(args, parser, name, ip, backend, resolved) for name, ip, _ in targets]
+    clone_options = dict(
+        base=args.base, datastore=args.datastore, cpus=args.cpus, mem_mb=args.ram,
+        guest_os=args.guest_os, network=args.network, max_usage_pct=args.max_usage,
+        skip_disk_check=args.skip_disk_check, power_on=args.power_on,
     )
 
-    setup_cli_logging(args.name, args.verbose)
+    if args.range:
+        _deploy_batch(args, specs, targets, clone_options)
+        return
+
+    (spec,) = specs
+    cfg = spec.network
+    setup_cli_logging(spec.name, args.verbose)
     log.info("=" * 60)
     log.info("Deploy VM: %s  (base: %s, datastore: %s, network: %s)",
-             args.name, args.base, args.datastore, args.network)
+             spec.name, args.base, args.datastore, args.network)
     if cfg.mode == "static":
         log.info("Guest network: %s/%s via %s (%s)", cfg.ip, cfg.prefix, cfg.gateway,
                  backend or args.platform)
@@ -299,18 +402,7 @@ def main() -> None:
     with exit_on_error(log, "Deploy"):
         conn = vmkit.open_connection(args.server, args.user, password, args.port)
         result = recipes.deploy(
-            conn, spec,
-            keep_iso=args.keep_iso,
-            base=args.base,
-            datastore=args.datastore,
-            cpus=args.cpus,
-            mem_mb=args.ram,
-            mac=args.mac_address,
-            guest_os=args.guest_os,
-            network=args.network,
-            max_usage_pct=args.max_usage,
-            skip_disk_check=args.skip_disk_check,
-            power_on=args.power_on,
+            conn, spec, keep_iso=args.keep_iso, mac=args.mac_address, **clone_options,
         )
 
     clone = result.clone
@@ -318,6 +410,47 @@ def main() -> None:
              ", powering through first boot" if clone.powered_on else ", powered off")
     if result.iso_path:
         log.info("Config ISO kept at %s.", result.iso_path)
+
+
+def _deploy_batch(
+    args: argparse.Namespace,
+    specs: list[recipes.DeploySpec],
+    targets: list[tuple[str, str | None, Path | None]],
+    clone_options: dict,
+) -> None:
+    label = args.name.replace(recipes.PLACEHOLDER, "N")
+    setup_cli_logging(label, args.verbose)
+    tag_batch_log_lines()
+    jobs = min(args.jobs, len(specs))
+    log.info("=" * 60)
+    log.info("Deploy %d VMs: %s .. %s  (base: %s, datastore: %s, %d at a time)",
+             len(specs), specs[0].name, specs[-1].name, args.base, args.datastore, jobs)
+    log.info("=" * 60)
+
+    password = resolve_password(args)
+
+    def on_plan(plan: vmkit.CapacityPlan) -> None:
+        log.info("Batch fits: datastore %.1f%% -> %.1f%% after %d clones.",
+                 plan.pct_now, plan.pct_after, plan.vm_count)
+        for warning in plan.warnings:
+            log.warning("%s", warning)
+
+    def on_outcome(outcome: recipes.Outcome) -> None:
+        if outcome.ok:
+            log.info("Deployed (MAC %s).", outcome.result.clone.mac)
+
+    with exit_on_error(log, "Deploy batch"):
+        result = recipes.deploy_batch(
+            batch_connector(args, password), specs,
+            jobs=jobs,
+            keep_isos={name: keep for name, _, keep in targets if keep},
+            on_plan=on_plan, on_outcome=on_outcome,
+            **clone_options,
+        )
+
+    log_batch_summary(log, result, lambda r: f"MAC {r.clone.mac}"
+                      + (", powering through first boot" if r.clone.powered_on else ""))
+    sys.exit(batch_exit_code(result))
 
 
 if __name__ == "__main__":
